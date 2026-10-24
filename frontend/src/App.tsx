@@ -13,7 +13,7 @@ const STAGES = [
   { id: 'S2', name: 'Break into parts', blurb: 'Blocks, sentences, labels, repeats' },
   { id: 'S3', name: 'Understand the task', blurb: 'Type, difficulty, risk, gaps, answer length' },
   { id: 'S4', name: 'Count and profile', blurb: 'Tokens, surprisal heat map, quality, warnings' },
-  { id: 'S5', name: 'Lock key words', blurb: 'Numbers, names, IDs, rules, labels, code' },
+  { id: 'S5', name: 'Lock and compress', blurb: 'Lock key words, LLMLingua-2 removes the rest of the waste' },
 ] as const
 type StageId = typeof STAGES[number]['id']
 
@@ -53,7 +53,7 @@ export default function App() {
   const timing = (id: string) => r?.timings.find(t => t.stage === id)?.ms
   const warnCount = (id: StageId) => {
     if (!r) return 0
-    return { S1: r.s1.injections.length + (r.s1.pii_redacted ? 0 : r.s1.pii.length), S2: r.s2.duplicates.length, S3: r.s3.gaps.length, S4: r.s4.warnings.length, S5: 0 }[id]
+    return { S1: r.s1.injections.length + (r.s1.pii_redacted ? 0 : r.s1.pii.length), S2: r.s2.duplicates.length, S3: r.s3.gaps.length, S4: r.s4.warnings.length, S5: r.s5.compression.missing_locks.length }[id]
   }
 
   return (
@@ -110,17 +110,19 @@ export default function App() {
               <Stat label="Padding + repeats" value={fmtInt(r.s4.removable_tokens)} sub={`${((r.s4.removable_tokens / Math.max(r.s4.primary.count, 1)) * 100).toFixed(0)}% of the prompt`} tone={r.s4.removable_tokens ? 'bad' : 'good'} />
               <Stat label="Quality" value={`${r.s4.quality.overall}/100`} sub={`${r.s4.warnings.length} warnings`} tone={r.s4.quality.overall >= 75 ? 'good' : 'default'} />
               <Stat label="Task" value={r.s3.task_type.type} sub={`${r.s3.difficulty.level} difficulty · ${r.s3.risk.level} risk`} />
-              <Stat label="Locked items" value={fmtInt(r.s5.lock_set.length)} sub={`${r.s5.spans.length} spans incl. nested`} />
+              <Stat label="After S5" value={fmtInt(r.s5.compression.compressed_tokens)}
+                sub={`−${((1 - r.s5.compression.ratio) * 100).toFixed(0)}% · ${r.s5.lock_set.length} locks ${r.s5.compression.locks_preserved ? 'kept' : 'LOST'}`}
+                tone={r.s5.compression.locks_preserved ? 'good' : 'bad'} />
               <Stat label="Cost / month" value={fmtUsd(r.s4.cost.per_month, 0)} sub={`${fmtUsd(r.s4.cost.per_call)} per call`} />
             </div>
 
             <nav className="grid grid-cols-1 gap-2 sm:grid-cols-5">
-              {STAGES.map((s, i) => (
+              {STAGES.map(s => (
                 <button key={s.id} onClick={() => setTab(s.id)}
                   className={`relative rounded-xl border px-3 py-2.5 text-left transition ${tab === s.id ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
                   <div className="flex items-center justify-between">
                     <span className={`text-xs font-bold ${tab === s.id ? 'text-indigo-700' : 'text-slate-400'}`}>{s.id}</span>
-                    <span className="font-mono text-[10px] text-slate-400">{timing(s.id)?.toFixed(0)} ms{i >= 3 ? ' ∥' : ''}</span>
+                    <span className="font-mono text-[10px] text-slate-400">{timing(s.id)?.toFixed(0)} ms</span>
                   </div>
                   <div className="text-sm font-semibold text-slate-900">{s.name}</div>
                   <div className="text-[11px] leading-snug text-slate-500">{s.blurb}</div>
@@ -128,7 +130,7 @@ export default function App() {
                 </button>
               ))}
             </nav>
-            <p className="-mt-2 text-right text-[11px] text-slate-400">S4 and S5 run in parallel · total {r.total_ms.toFixed(0)} ms</p>
+            <p className="-mt-2 text-right text-[11px] text-slate-400">Each stage builds on the ones before · total {r.total_ms.toFixed(0)} ms</p>
 
             {tab === 'S1' && <S1Panel s1={r.s1} />}
             {tab === 'S2' && <S2Panel s2={r.s2} text={r.s1.clean_text} segmentTokens={r.s4.segment_tokens} />}

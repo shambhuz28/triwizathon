@@ -65,6 +65,7 @@ export default function S3Panel({ s3 }: { s3: S3Result }) {
                 <div className="flex items-center gap-2"><Pill className="bg-indigo-50 text-indigo-700">{g.kind}</Pill><span className="text-sm font-medium">{g.message}</span></div>
                 <p className="mt-2 rounded bg-amber-50 px-2 py-1.5 text-xs text-amber-800">[Assumption, edit if needed] {g.assumption}</p>
                 {g.evidence && <p className="mt-1.5 truncate font-mono text-[11px] text-slate-400">“{g.evidence}”</p>}
+                {g.segment_ids.length > 0 && <p className="mt-1 font-mono text-[10px] text-slate-400">parts {g.segment_ids.join(' ')}</p>}
               </div>
             ))}
           </div>

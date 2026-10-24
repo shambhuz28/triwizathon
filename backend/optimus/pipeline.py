@@ -1,6 +1,9 @@
-"""Pipeline driver: runs S1 → S2 → S3 → (S4 ∥ S5).
+"""Pipeline driver: runs S1 → S2 → S3 → S4 → S5.
 
 Each stage lives in its own module under optimus/stages/ and exposes a single `run(...)`.
+Every stage reads the outputs of the stages before it: S3 and S4 work on S2's parts, and S5
+uses S2–S4 to decide which words LLMLingua-2 may remove. S5's result (locks, compressed
+prompt, per-part decisions, handoff) is the input S6/S7 will build their variants from.
 To change a step, edit its module; to add S6+, add a module and a line in `analyze`.
 
     python -m optimus.pipeline path/to/prompt.txt      # print a summary
@@ -20,7 +23,7 @@ STAGES = {
     "S2": "Break into parts",
     "S3": "Understand the task",
     "S4": "Count and profile",
-    "S5": "Lock key words",
+    "S5": "Lock and compress",
 }
 
 
@@ -38,13 +41,10 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
     s1 = await _timed("S1", timings, s1_clean.run, req.prompt, redact_pii=req.redact_pii)
     s2 = await _timed("S2", timings, s2_parse.run, s1)
     s3 = await _timed("S3", timings, s3_task.run, s1, s2)
-    s4, s5 = await asyncio.gather(
-        _timed("S4", timings, s4_profile.run, s1, s2, s3, target_model=req.target_model,
-               monthly_volume=req.monthly_volume),
-        _timed("S5", timings, s5_lock.run, s1, s2),
-    )
+    s4 = await _timed("S4", timings, s4_profile.run, s1, s2, s3, target_model=req.target_model,
+                      monthly_volume=req.monthly_volume)
+    s5 = await _timed("S5", timings, s5_lock.run, s1, s2, s3, s4)
 
-    timings.sort(key=lambda t: t.stage)
     return AnalyzeResponse(s1=s1, s2=s2, s3=s3, s4=s4, s5=s5, timings=timings,
                            total_ms=round((time.perf_counter() - t0) * 1000, 1))
 
@@ -63,7 +63,7 @@ def _summary(r: AnalyzeResponse) -> str:
     t = r.s3
     out.append(f"S3  task={t.task_type.type} ({t.task_type.confidence})  difficulty={t.difficulty.level}  risk={t.risk.level}"
                f"  items={t.items}  answer≈{t.answer_length.expected_tokens} budget={t.answer_length.budget}"
-               f" max_tokens={t.answer_length.max_tokens}")
+               f" max_tokens={t.answer_length.max_tokens}  task parts={t.task_segments}")
     out += [f"    gap[{g.kind}] {g.message}" for g in t.gaps]
     p = r.s4
     out.append(f"S4  tokens={p.primary.count} ({p.primary.tokenizer}{'' if p.primary.exact else ' ±20%'})  removable={p.removable_tokens}"
@@ -73,12 +73,19 @@ def _summary(r: AnalyzeResponse) -> str:
     out += [f"    warn[{w.severity}] {w.message}" for w in p.warnings]
     out.append(f"S5  {len(r.s5.spans)} locks {r.s5.by_category}  label sets={[ls.items for ls in r.s5.label_sets]}")
     out += [f"    {s.id:>4} {s.category:<11} {s.text[:60]!r}" for s in r.s5.spans if s.parent is None]
+    c = r.s5.compression
+    out.append(f"    compressed {c.original_tokens} → {c.compressed_tokens} tokens ({1 - c.ratio:.0%} saved)"
+               f"  locks preserved={c.locks_preserved}  method={c.method}")
+    out += [f"    {p.id:>4} {p.action:<8} {p.keep_rate:.2f} {p.compressed[:70]!r}" for p in r.s5.segments if p.action != "keep"]
+    out.append("    prompt: " + c.prompt.replace("\n", "\n            "))
+    h = r.s5.handoff
+    out.append(f"    handoff  max ladder={h.max_ladder_level}  budget={h.answer_budget}  sections={h.sections}")
     out.append("time " + "  ".join(f"{t.stage}={t.ms:.0f}ms" for t in r.timings) + f"  total={r.total_ms:.0f}ms")
     return "\n".join(out)
 
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    text = open(args[0]).read() if args else sys.stdin.read()
+    text = open(args[0], encoding="utf-8").read() if args else sys.stdin.read()
     result = analyze_sync(text, redact_pii="--redact" in sys.argv)
     print(result.model_dump_json(indent=2) if "--json" in sys.argv else _summary(result))

@@ -52,3 +52,17 @@ s4:
 
 s5:
   max_restriction_scope_tokens: 4
+  compression:                   # LLMLingua-2 word removal, steered by S2 labels, S3 risk and S4 scores
+    model_weight: 0.7            # LLMLingua-2 keep probability vs S4 informativeness in each word's score
+    low_info_penalty: 0.6        # multiplier for words inside an S4 low-information phrase
+    drop_below: 0.25             # words whose combined score is below this are unnecessary
+    min_words: 4                 # parts with fewer words are kept whole
+    keep_rate:                   # floor: least share of the words S4 did not flag that a part keeps, per S2 label
+                                 # [least informative part, most informative part]
+      role: [0.80, 1.0]
+      task: [0.85, 1.0]
+      question: [0.90, 1.0]
+      rules: [0.90, 1.0]
+      format: [0.85, 1.0]
+      context: [0.50, 0.75]
+    high_risk_min_rate: 1.0      # S3 high risk: least share kept (1.0 = only S2's padding/repeats go; PRD caps B at L2)

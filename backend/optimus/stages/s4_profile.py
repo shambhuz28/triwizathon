@@ -14,12 +14,17 @@ Information profile, word by word, from several complementary signals:
   • keyphrase   salience from YAKE (statistical) and KeyBERT (embedding) extractors
 They are z-scored within the prompt and mixed with weights from thresholds.yaml into one
 0–1 informativeness score that drives the heat map, the "surprising words" list and the
-low-information phrases (first in line for removal in S7).
+low-information phrases (first in line for removal in S5/S7).
+
+S2's parts steer the profile: words in padding parts count as filler, padding and repeated
+parts are listed as low-information phrases, data/examples/code are never removal candidates,
+and every part gets a mean informativeness that S5 uses to decide how hard to compress it.
 
 Prompt quality (clarity, specificity, rules, structure, repetition) and plain warnings.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import os
 
@@ -132,7 +137,8 @@ def _filler_hits(text: str) -> list[tuple[int, int, str]]:
     return hits
 
 
-def profile_words(text: str) -> tuple[list[WordInfo], list[Keyphrase], dict]:
+def profile_words(text: str, padding_spans=()) -> tuple[list[WordInfo], list[Keyphrase], dict]:
+    """padding_spans: (start, end) of the parts S2 labelled padding; their words count as filler."""
     w = thresholds()["s4"]["weights"]
     doc = resources.parse(text)
     words = [t for t in doc if not t.is_space]
@@ -179,7 +185,7 @@ def profile_words(text: str) -> tuple[list[WordInfo], list[Keyphrase], dict]:
 
     filler_hits = _filler_hits(text)
     filler = np.array([t.lower_ in textutils.FILLER_WORDS for t in words], dtype=bool)
-    for a, b, _ in filler_hits:
+    for a, b in [(a, b) for a, b, _ in filler_hits] + list(padding_spans):
         for k in set(char_to_word[a:b]) - {-1}:
             filler[k] = True
 
@@ -268,6 +274,16 @@ def low_info_phrases(text: str, s2: S2Result, extras: dict, percentile: float) -
     for a, b, why in extras["filler_hits"]:
         if not is_protected(a, b):
             out.append(LowInfoPhrase(start=a, end=b, text=text[a:b], score=0.1, info_bits=0.0, reason=f"filler: {why}"))
+    # Whole parts S2 already marked for removal: padding and repeats of an earlier instruction.
+    starts = [t.idx for t in words]
+    for s in s2.segments:
+        if not s.remove or s.content_end <= s.content_start:
+            continue
+        ks = list(range(bisect.bisect_left(starts, s.content_start), bisect.bisect_left(starts, s.content_end)))
+        why = f"S2: repeats {s.duplicate_of}" if s.duplicate_of else f"S2: {'filler' if s.kind == 'filler' else 'padding'}"
+        out.append(LowInfoPhrase(start=s.content_start, end=s.content_end, text=s.text,
+                                 score=round(float(score[ks].mean()), 3) if ks and s.duplicate_of else 0.1,
+                                 info_bits=round(float(surprisal[ks].sum()), 2) if ks else 0.0, reason=why))
     # merge overlapping / touching spans into readable phrases
     out.sort(key=lambda p: (p.start, -p.end))
     merged: list[LowInfoPhrase] = []
@@ -282,6 +298,17 @@ def low_info_phrases(text: str, s2: S2Result, extras: dict, percentile: float) -
         else:
             merged.append(p)
     return merged
+
+
+def segment_informativeness(s2: S2Result, heat: list[WordInfo]) -> dict[str, float]:
+    """Mean informativeness of the words (punctuation excluded) in each S2 part."""
+    starts = [w.start for w in heat]
+    out: dict[str, float] = {}
+    for s in s2.segments:
+        lo, hi = bisect.bisect_left(starts, s.content_start), bisect.bisect_left(starts, s.content_end)
+        vals = [w.score for w in heat[lo:hi] if any(c.isalnum() for c in w.text)]
+        out[s.id] = round(float(np.mean(vals)), 3) if vals else 0.0
+    return out
 
 
 # ── Quality score and warnings ───────────────────────────────────────────────
@@ -403,13 +430,16 @@ def run(s1: S1Result, s2: S2Result, s3: S3Result, target_model: str | None = Non
                 return s.label
         return "text"
 
-    heat, keyphrases, extras = profile_words(text)
+    heat, keyphrases, extras = profile_words(text, [(s.content_start, s.content_end) for s in s2.segments
+                                                    if s.label == "padding"])
     surprising = surprising_words(heat, extras, cfg_s4["surprising_top_k"], label_at) if heat else []
     low_info = low_info_phrases(text, s2, extras, cfg_s4["low_info_percentile"]) if heat else []
+    segment_info = segment_informativeness(s2, heat)
     quality, warns = assess_quality(s1, s2, s3, primary.count, removable, by_label_raw)
     cost = cost_preview(model_id, mcfg, primary.count, s3.answer_length.expected_tokens, monthly_volume)
 
     return S4Result(tokens=counts, primary=primary, by_label=by_label, segment_tokens=seg_tokens,
-                    removable_tokens=removable, heatmap=heat, surprising=surprising, low_info=low_info,
+                    removable_tokens=removable, segment_info=segment_info, heatmap=heat, surprising=surprising,
+                    low_info=low_info,
                     keyphrases=keyphrases, quality=quality, warnings=warns, cost=cost,
                     lm=resources.LM_MODEL)

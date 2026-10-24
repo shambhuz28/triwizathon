@@ -17,5 +17,6 @@ rapidfuzz>=3.9
 wordfreq>=3.1
 yake>=0.4.8
 keybert>=0.8
+llmlingua>=0.2.2   # S5: LLMLingua-2 word removal (model downloads ~700 MB on first run)
 anthropic>=0.40   # optional: exact Claude token counts when ANTHROPIC_API_KEY is set
 pytest>=8

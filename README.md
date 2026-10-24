@@ -6,12 +6,29 @@ Analysis pipeline stages **S1–S5** from the PRD (`worst case .pdf`) plus a web
 |---|---|---|---|
 | S1 Clean up | `backend/optimus/stages/s1_clean.py` | normalise text, detect language, find/redact personal info, flag embedded instructions | ftfy, regex, langdetect, Presidio + spaCy, MiniLM embeddings |
 | S2 Break into parts | `backend/optimus/stages/s2_parse.py` | pull out code/JSON/tables, split sentences, label 9 kinds of content, link repeats | pysbd, spaCy, MiniLM, RapidFuzz |
-| S3 Understand the task | `backend/optimus/stages/s3_task.py` | task type, difficulty, risk, gaps, answer-length budget | spaCy, MiniLM, tiktoken |
-| S4 Count and profile | `backend/optimus/stages/s4_profile.py` | token counts, cost preview, surprisal/entropy heat map, surprising words, low-info phrases, quality score, warnings | tiktoken, GPT-2 small, wordfreq, YAKE, KeyBERT |
-| S5 Lock key words | `backend/optimus/stages/s5_lock.py` | numbers, names, identifiers, restrictions, label sets, code, quotes, placeholders | regex, spaCy NER + dependency parse |
+| S3 Understand the task | `backend/optimus/stages/s3_task.py` | task type (from S2's task/question parts), difficulty, risk, gaps linked to S2 parts, answer-length budget | spaCy, MiniLM, tiktoken |
+| S4 Count and profile | `backend/optimus/stages/s4_profile.py` | token counts, cost preview, surprisal/entropy heat map, surprising words, low-info phrases (incl. S2 padding/repeats), informativeness per S2 part, quality score, warnings | tiktoken, GPT-2 small, wordfreq, YAKE, KeyBERT |
+| S5 Lock and compress | `backend/optimus/stages/s5_lock.py` | locks numbers, names, identifiers, restrictions, label sets, code, quotes, placeholders; removes unnecessary words; hands off to S6/S7 | regex, spaCy NER + dependency parse, LLMLingua-2 |
 
-`backend/optimus/pipeline.py` is the driver: S1 → S2 → S3 → (S4 ∥ S5). Each stage exposes one `run(...)`,
-so a step can be changed on its own. Prices and thresholds live in `backend/optimus/config/*.yaml`.
+`backend/optimus/pipeline.py` is the driver: S1 → S2 → S3 → S4 → S5. Each stage reads the outputs of the ones
+before it and exposes one `run(...)`, so a step can be changed on its own. Prices and thresholds live in
+`backend/optimus/config/*.yaml`.
+
+## Removing unnecessary words (S5)
+LLMLingua-2 (`microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank`) gives every word a keep
+probability, mixed 70/30 with S4's informativeness. The earlier stages decide what may go:
+- **S2**: padding, carved-off filler and repeated instructions are dropped whole. Data, examples, code, tables
+  and headers are never touched. Each label has a keep-rate floor (instructions 80–100%, context 50–75%).
+- **S3**: high-risk tasks (legal, medical, financial, code, numeric rules) keep every word. Only S2's drops apply (ladder L2).
+- **S4**: a part's informativeness sets its floor inside the band. Words in S4 low-information phrases are
+  removed first, and each phrase is kept or dropped as a whole.
+- **S5 locks**: always kept, so `compression.locks_preserved` must be true.
+
+The text is rebuilt from the original words; LLMLingua's own detokeniser turns "isn't" into "t". S5 returns
+`compression.prompt`, a `segments` list (one entry per S2 part with action, original and compressed text, locks, removed
+spans and word scores) and a `handoff` (task, risk, max ladder level, answer budget, label → part IDs,
+requirement IDs, `{{ASSUMPTION: …}}` placeholders). That is the input for S6 (Variant A) and S7 (Variant B).
+Without the model (offline), S5 falls back to S4 scores and says so in `compression.method`.
 
 ## Surprising words (S4)
 Each word gets several signals, z-scored within the prompt and mixed (weights in `thresholds.yaml`):

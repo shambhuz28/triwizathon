@@ -1,9 +1,13 @@
 """S3 · Understand the task.
 
-Task type: lemma keyword evidence (spaCy) over the instruction parts, combined with
-sentence-embedding similarity to task prototypes. Difficulty: weighted count of sub-tasks,
-rules, reasoning words and length. Risk: legal / medical / financial vocabulary, code, or
-three or more numeric rules. Gaps: missing audience, format, length, scope, or vague wording.
+Everything here reads S2's parts rather than the raw text: padding and repeats S2 marked for
+removal are ignored, and the parts S2 labelled task/question carry the most weight.
+
+Task type: keyword evidence over the task/question parts (other instruction parts count half),
+combined with sentence-embedding similarity to task prototypes. Difficulty: S2 requirements,
+rules, reasoning words and the length of what is left once padding is gone. Risk: legal /
+medical / financial vocabulary, code, or three or more numeric rules. Gaps: missing audience,
+format, length, scope, or vague wording, each linked to the S2 parts it is about.
 Answer length: a per-task table adjusted by explicit cues ("in 50 words", "list 5", item count),
 with a per-task floor so the budget never backfires.
 """
@@ -102,16 +106,21 @@ def _num(s: str) -> int:
     return int(s) if s.isdigit() else _WORD_NUMS.get(s.lower(), 0)
 
 
-def classify_task(instr_text: str, has_code_block: bool) -> TaskType:
+def classify_task(instr_text: str, has_code_block: bool, task_text: str = "") -> TaskType:
+    """Keyword hits in the task/question parts count fully; hits in the other instruction parts
+    (rules, format, role, context) count half, so "never write code" cannot outvote the task."""
+    focus = task_text or instr_text
     kw = np.zeros(len(TASK_TYPES))
     for k, t in enumerate(TASK_TYPES):
         for pat, w in _KEYWORD_RES[t]:
-            kw[k] += w * min(3, len(pat.findall(instr_text)))
+            kw[k] += w * min(3, len(pat.findall(focus)))
+            if task_text:
+                kw[k] += 0.5 * w * min(3, len(pat.findall(instr_text)))
     if has_code_block:
         kw[TASK_TYPES.index("code")] += 1.0
         kw[TASK_TYPES.index("debug")] += 0.5
     protos = resources.embed([PROTOTYPES[t] for t in TASK_TYPES])
-    q = resources.embed([instr_text or "chat"])[0]
+    q = resources.embed([focus or "chat"])[0]
     sims = protos @ q
     emb = np.exp((sims - sims.max()) * 15)
     emb /= emb.sum()
@@ -124,9 +133,11 @@ def classify_task(instr_text: str, has_code_block: bool) -> TaskType:
 
 
 def estimate_difficulty(s2: S2Result, instr_text: str, task: str, n_tokens: int) -> Difficulty:
+    """n_tokens is the live prompt length (padding and repeats excluded), so greetings don't add difficulty."""
     cfg = thresholds()["s3"]["difficulty"]
     live = [s for s in s2.segments if not s.remove]
-    subtasks = sum(1 for s in live if s.label in ("task", "question"))
+    # S2 gives every distinct task/question one requirement id (repeats share their original's id).
+    subtasks = sum(1 for r in s2.requirements if r.label in ("task", "question"))
     subtasks += len(re.findall(r"\b(?:and also|also|additionally|then|as well as|plus)\b", instr_text, re.I))
     rules = sum(1 for s in live if s.label == "rules")
     reasoning = len(REASONING_WORDS.findall(instr_text))
@@ -150,7 +161,7 @@ def assess_risk(s2: S2Result, instr_text: str, data_text: str, task: str) -> Ris
     if task in ("code", "debug") or s2.label_counts.get("data", 0) and any(b.kind == "code" for b in s2.blocks):
         domains.append("code")
         reasons.append("code is involved")
-    numeric_rules = [s for s in s2.segments if s.label in ("rules", "format") and _NUMBER_RE.search(s.text)]
+    numeric_rules = [s for s in s2.segments if s.label in ("rules", "format") and not s.remove and _NUMBER_RE.search(s.text)]
     need = thresholds()["s3"]["numeric_rules_for_high_risk"]
     if len(numeric_rules) >= need:
         reasons.append(f"{len(numeric_rules)} rules contain numbers")
@@ -158,13 +169,16 @@ def assess_risk(s2: S2Result, instr_text: str, data_text: str, task: str) -> Ris
     return Risk(level=level, domains=domains, reasons=reasons or ["no legal, medical, financial or code signals"])
 
 
-def find_gaps(s2: S2Result, instr_text: str, task: str, has_data: bool, budget: int) -> list[Gap]:
+def find_gaps(s2: S2Result, instr_text: str, task: str, has_data: bool, budget: int,
+              task_ids: list[str] | None = None) -> list[Gap]:
     gaps: list[Gap] = []
+    task_ids = task_ids or []
     labels = {s.label for s in s2.segments if not s.remove}
     if "format" not in labels:
         default = {"classify": "a Markdown table with one row per item", "extract": "a JSON object",
                    "summarise": "3–5 bullet points", "code": "a single code block with a one-line explanation"}.get(task, "plain text, no preamble")
-        gaps.append(Gap(kind="format", message="No answer format given.", assumption=f"Answer as {default}."))
+        gaps.append(Gap(kind="format", message="No answer format given.", assumption=f"Answer as {default}.",
+                        segment_ids=task_ids))
     if not _LENGTH_RE.search(instr_text) and task not in ("code", "translate"):
         gaps.append(Gap(kind="length", message="No answer length given.",
                         assumption=f"Keep the answer under about {budget} tokens."))
@@ -189,10 +203,11 @@ def find_gaps(s2: S2Result, instr_text: str, task: str, has_data: bool, budget: 
         if m:
             gaps.append(Gap(kind="ambiguity", message=f"Vague wording: '{m.group(0)}'.",
                             assumption="Interpret it as the most common reading and state that choice.",
-                            evidence=whole))
+                            evidence=whole, segment_ids=[s.id for s in segs[lo:hi + 1]]))
     if task in ("classify",) and not re.search(r"\b(?:mixed|both|tie|unclear|ambiguous)\b", instr_text, re.I):
         gaps.append(Gap(kind="scope", message="No rule for items that fit more than one label.",
-                        assumption='An item with both praise and a complaint is "neutral" unless one side clearly dominates.'))
+                        assumption='An item with both praise and a complaint is "neutral" unless one side clearly dominates.',
+                        segment_ids=task_ids))
     return gaps
 
 
@@ -249,22 +264,27 @@ def estimate_answer_length(task: str, instr_text: str, items: int, data_tokens: 
 
 def run(s1: S1Result, s2: S2Result) -> S3Result:
     live = [s for s in s2.segments if not s.remove]
+    task_parts = [s for s in live if s.label in ("task", "question") and s.kind != "header"]
+    task_text = " ".join(s.text for s in task_parts)
     instr_text = " ".join(s.text for s in live if s.label in ("role", "task", "rules", "format", "question", "context"))
     data_text = " ".join(s.text for s in s2.segments if s.label in ("data", "examples"))
     has_code = any(b.kind == "code" for b in s2.blocks)
     enc = resources.tiktoken_encoding("o200k_base")
-    n_tokens = len(enc.encode(s1.clean_text))
+    live_tokens = len(enc.encode("".join(s1.clean_text[s.start:s.end] for s in live)))
     data_tokens = len(enc.encode(data_text)) if data_text else 0
 
-    task = classify_task(instr_text, has_code)
+    task = classify_task(instr_text, has_code, task_text)
     items = s2.data_items
     has_format = any(s.label == "format" for s in live)
     answer = estimate_answer_length(task.type, instr_text, items, data_tokens, has_format)
+    task_ids = [s.id for s in task_parts]
     return S3Result(
         task_type=task,
-        difficulty=estimate_difficulty(s2, instr_text, task.type, n_tokens),
+        difficulty=estimate_difficulty(s2, instr_text, task.type, live_tokens),
         risk=assess_risk(s2, instr_text, data_text, task.type),
-        gaps=find_gaps(s2, instr_text, task.type, bool(data_text), answer.budget),
+        gaps=find_gaps(s2, instr_text, task.type, bool(data_text), answer.budget, task_ids),
         answer_length=answer,
         items=items,
+        task_segments=task_ids,
+        live_tokens=live_tokens,
     )

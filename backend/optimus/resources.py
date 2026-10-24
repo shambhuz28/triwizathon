@@ -1,6 +1,7 @@
 """Lazily loaded local models shared by the stages (all CPU, no API cost)."""
 from __future__ import annotations
 
+import logging
 import threading
 from functools import lru_cache, wraps
 
@@ -9,6 +10,7 @@ _lock = threading.RLock()
 SPACY_MODEL = "en_core_web_sm"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LM_MODEL = "openai-community/gpt2"
+LLMLINGUA_MODEL = "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
 
 
 def _load_once(fn):
@@ -64,6 +66,19 @@ def lm():
 
 
 @_load_once
+def llmlingua():
+    """LLMLingua-2 compressor (a token classifier scoring how worth keeping each token is), or None
+    when the package or model is unavailable; S5 then ranks words by S4 informativeness alone."""
+    try:
+        from llmlingua import PromptCompressor
+
+        return PromptCompressor(model_name=LLMLINGUA_MODEL, use_llmlingua2=True, device_map="cpu")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("LLMLingua-2 unavailable (%s); S5 falls back to S4 scores", exc)
+        return None
+
+
+@_load_once
 def keybert():
     from keybert import KeyBERT
 
@@ -111,6 +126,7 @@ def warmup() -> None:
     embed(["warm up"])
     lm()
     keybert()
+    llmlingua()
     presidio().analyze(text="warm up", language="en")
     tiktoken_encoding("o200k_base")
     tiktoken_encoding("cl100k_base")

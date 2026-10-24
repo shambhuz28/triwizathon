@@ -129,6 +129,7 @@ class Gap(BaseModel):
     message: str
     assumption: str
     evidence: str | None = None
+    segment_ids: list[str] = Field(default_factory=list)   # S2 parts the gap is about; empty = whole prompt
 
 
 class AnswerLength(BaseModel):
@@ -147,6 +148,8 @@ class S3Result(BaseModel):
     gaps: list[Gap]
     answer_length: AnswerLength
     items: int
+    task_segments: list[str] = Field(default_factory=list)   # S2 parts that state the task / question
+    live_tokens: int = 0                                     # prompt tokens once S2's padding and repeats are gone
 
 
 # ── S4 · Count and profile ───────────────────────────────────────────────────
@@ -239,6 +242,7 @@ class S4Result(BaseModel):
     by_label: list[LabelTokens]
     segment_tokens: dict[str, int]
     removable_tokens: int
+    segment_info: dict[str, float] = Field(default_factory=dict)   # mean word informativeness per S2 part, 0..1
     heatmap: list[WordInfo]
     surprising: list[SurprisingWord]
     low_info: list[LowInfoPhrase]
@@ -249,7 +253,7 @@ class S4Result(BaseModel):
     lm: str
 
 
-# ── S5 · Lock key words ──────────────────────────────────────────────────────
+# ── S5 · Lock key words and remove unnecessary ones ─────────────────────────
 LockCategory = Literal["number", "name", "identifier", "restriction", "label", "code",
                        "quote", "placeholder", "format", "data"]
 
@@ -271,11 +275,70 @@ class LabelSet(BaseModel):
     items: list[str]
 
 
+class PIRSegment(BaseModel):
+    """One S2 part as handed to S6/S7: what S5 did to it and why."""
+    id: str
+    label: Label
+    kind: str
+    requirement_id: str | None = None
+    action: Literal["keep", "compress", "drop"]
+    reason: str
+    start: int                    # content offsets in clean_text
+    end: int
+    text: str                     # original wording
+    compressed: str               # wording after unnecessary words are removed ("" when dropped)
+    tokens: int
+    compressed_tokens: int
+    keep_rate: float              # share of words S5 aimed to keep
+    info: float                   # S4 mean informativeness, 0..1
+    locks: list[str]              # ids of the top-level locks inside this part
+    dropped_spans: list[tuple[int, int]] = Field(default_factory=list)   # removed words, clean_text offsets
+    # (start, end, keep score) per word of a compressed part (locked words = 1.0), so S7 can
+    # re-threshold at other ladder levels without running LLMLingua-2 again
+    word_scores: list[tuple[int, int, float]] = Field(default_factory=list)
+
+
+class Compression(BaseModel):
+    method: str
+    model: str | None
+    tokenizer: str
+    original_tokens: int
+    compressed_tokens: int
+    saved_tokens: int
+    ratio: float                  # compressed / original
+    prompt: str                   # the prompt with unnecessary words removed and every lock intact
+    locks_preserved: bool
+    missing_locks: list[str]
+
+
+class Assumption(BaseModel):
+    kind: str
+    message: str
+    placeholder: str              # "{{ASSUMPTION: ...}}" text for Variant A
+    segment_ids: list[str]
+
+
+class Handoff(BaseModel):
+    """Everything S6 (Variant A) and S7 (Variant B) need, so they can build from S5 alone."""
+    task_type: str
+    difficulty: str
+    risk_level: str
+    max_ladder_level: Literal["L2", "L5"]   # high-risk tasks stop Variant B at the safe steps
+    answer_budget: int
+    max_tokens: int
+    sections: dict[str, list[str]]          # S2 label -> ids of the parts kept, in prompt order
+    requirements: list[str]                 # requirement ids every variant must cover
+    assumptions: list[Assumption]
+
+
 class S5Result(BaseModel):
     spans: list[LockedSpan]
     label_sets: list[LabelSet]
     by_category: dict[str, int]
     lock_set: list[str]           # unique top-level texts every later version must contain
+    segments: list[PIRSegment]
+    compression: Compression
+    handoff: Handoff
 
 
 # ── Pipeline ─────────────────────────────────────────────────────────────────
