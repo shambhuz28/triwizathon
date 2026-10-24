@@ -10,12 +10,12 @@ HERE = Path(__file__).parent
 
 @pytest.fixture(scope="module")
 def worked():
-    return analyze_sync((HERE / "worked_example.txt").read_text())
+    return analyze_sync((HERE / "worked_example.txt").read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
 def messy():
-    return analyze_sync((HERE / "messy_example.txt").read_text(), redact_pii=True)
+    return analyze_sync((HERE / "messy_example.txt").read_text(encoding="utf-8"), redact_pii=True)
 
 
 def test_parts_rebuild_input_exactly(worked, messy):
@@ -30,9 +30,31 @@ def test_worked_example_token_count_matches_prd(worked):
 
 def test_padding_and_repeat_marked_for_removal(worked):
     labels = [s.label for s in worked.s2.segments]
-    assert labels.count("padding") == 4
+    assert sum(1 for s in worked.s2.segments if s.label == "padding" and s.kind != "filler") == 4
     assert len(worked.s2.duplicates) == 1
     assert labels.count("data") == 4                # header + three reviews
+
+
+def test_filler_carved_off_sentence_edges(worked):
+    segs = worked.s2.segments
+    fillers = {s.text for s in segs if s.kind == "filler"}
+    assert {"Basically", "And please", "or something like that so it's easy to read."} <= fillers
+    assert all(s.label == "padding" and s.remove for s in segs if s.kind == "filler")
+    rule = next(s for s in segs if s.text.startswith("don't make up"))
+    assert rule.label == "rules" and not rule.remove
+
+
+def test_chatty_prompt_padding():
+    from optimus.stages import s1_clean, s2_parse
+    text = ("hey, hope you're doing good. i need some help figuring out what people are saying lol.\n\n"
+            "oh and please dont make anything up ok?\n\nhere are the feedbacks:\n\n1. \"Late and cold.\"\n"
+            "2. \"Great food.\"\n\nthanks a lot, really appreciate it!")
+    segs = s2_parse.run(s1_clean.run(text)).segments
+    by_text = {s.text: s for s in segs}
+    assert by_text["hey, hope you're doing good."].label == "padding"
+    assert by_text["lol."].kind == "filler" and by_text["ok?"].kind == "filler"
+    assert by_text["dont make anything up"].label == "rules"
+    assert by_text["here are the feedbacks:"].label == "data" and not by_text["here are the feedbacks:"].remove
 
 
 def test_task_understood(worked):

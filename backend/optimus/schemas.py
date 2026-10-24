@@ -70,7 +70,7 @@ class Segment(BaseModel):
     content_start: int         # the segment without surrounding whitespace
     content_end: int
     text: str
-    kind: Literal["sentence", "list_item", "header", "code", "json", "table", "tagged"]
+    kind: Literal["sentence", "list_item", "header", "filler", "code", "json", "table", "tagged"]
     label: Label
     confidence: float
     scores: dict[str, float]

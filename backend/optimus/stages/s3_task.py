@@ -174,14 +174,22 @@ def find_gaps(s2: S2Result, instr_text: str, task: str, has_data: bool, budget: 
     if task in ("classify", "extract", "summarise", "translate", "qa_docs", "debug") and not has_data:
         gaps.append(Gap(kind="data", message="The task needs input data but none was found.",
                         assumption="The input will be supplied at the {{input}} placeholder."))
-    for seg in s2.segments:
+    segs = s2.segments
+    for k, seg in enumerate(segs):
         if seg.remove or seg.label not in ("task", "rules", "format", "question"):
             continue
-        m = textutils.VAGUE_RE.search(seg.text)
+        # Read the instruction together with filler carved off its edges ("a table | or something").
+        lo, hi = k, k
+        while lo > 0 and segs[lo - 1].kind == "filler":
+            lo -= 1
+        while hi + 1 < len(segs) and segs[hi + 1].kind == "filler":
+            hi += 1
+        whole = " ".join(s.text for s in segs[lo:hi + 1])
+        m = textutils.VAGUE_RE.search(whole)
         if m:
             gaps.append(Gap(kind="ambiguity", message=f"Vague wording: '{m.group(0)}'.",
                             assumption="Interpret it as the most common reading and state that choice.",
-                            evidence=seg.text))
+                            evidence=whole))
     if task in ("classify",) and not re.search(r"\b(?:mixed|both|tie|unclear|ambiguous)\b", instr_text, re.I):
         gaps.append(Gap(kind="scope", message="No rule for items that fit more than one label.",
                         assumption='An item with both praise and a complaint is "neutral" unless one side clearly dominates.'))

@@ -53,6 +53,7 @@ RULES: dict[str, list[tuple[re.Pattern, float, str]]] = {
          1.6, "asks for a response shape"),
         (_R(r"\b(?:in|under|within|at most|no more than|max(?:imum)?(?: of)?)\s+\d+\s+(?:words?|sentences?|paragraphs?"
             r"|lines?|bullets?|points?|characters?|tokens?)\b|\bword limit\b"), 1.8, "sets an answer length"),
+        (_R(r"\b(?:same|original|input|given) order\b|\bin order\b"), 1.8, "fixes the answer order"),
     ],
     "rules": [
         (_R(r"\b(?:must|never|always|do not|don't|dont|should not|shouldn't|must not|mustn't|avoid|refrain"
@@ -89,6 +90,40 @@ _NEGATION_RE = re.compile(r"\b(?:not|never|no|don't|dont|do not|without|avoid)\b
 _ENSURE_RE = re.compile(r"^\W*(?:\w+\s+)?(?:please\s+)?(?:make sure|ensure|be sure|remember to)\b", re.I)
 _FORMAT_CUE_RE = re.compile(r"\b(?:format|schema|template|structure|like this|as follows|following shape)\b", re.I)
 _EXAMPLE_CUE_RE = re.compile(r"\b(?:example|e\.g\.|sample|for instance)\b", re.I)
+# A verbless fragment that extends the previous instruction ("maybe with the id, the issue and a quote").
+_CONTINUATION_RE = re.compile(r"^\W*(?:(?:maybe|and|also|plus)\s+)*(?:with|including|along with)\b", re.I)
+_SMALLTALK_KINDS = {"greeting", "thanks", "pleasantry"}
+
+
+def _has_content(doc, start: int, end: int) -> bool:
+    span = doc.char_span(start, end, alignment_mode="expand") if start < end else None
+    return bool(span) and any(t.is_alpha and not t.is_stop and t.lemma_.lower() not in textutils.FILLER_WORDS
+                              and t.lower_ not in textutils.FILLER_WORDS for t in span)
+
+
+def _carve(text: str, units: list, doc, section_of, injections) -> list:
+    """Split filler off the edges of prose sentences into their own units. A sentence whose
+    core has no content words once greetings/pleasantries are removed becomes one small-talk unit."""
+    out = []
+    for unit in units:
+        cs, ce, ukind, raw = unit
+        sec = section_of(cs)
+        if (raw is not None or (sec and sec.label in ("data", "examples")) or textutils.QUOTE_LINE_RE.match(text[cs:ce])
+                or any(textutils.overlaps(cs, ce, f.start, f.end) for f in injections)):
+            out.append(unit)
+            continue
+        lead, (ks, ke), trail = textutils.carve_filler(text, cs, ce)
+        pieces = [p for p in (lead, trail) if p]
+        if not pieces or any(q in text[a:b] for a, b in pieces for q in '"“”`'):
+            out.append(unit)
+        elif not _has_content(doc, ks, ke):
+            polite = any(textutils.filler_kind(text[a:b]) in _SMALLTALK_KINDS for a, b in pieces)
+            out.append((cs, ce, "smalltalk", None) if polite else unit)
+        else:
+            out += [(*lead, "filler", None)] if lead else []
+            out.append((ks, ke, ukind, None))
+            out += [(*trail, "filler", None)] if trail else []
+    return out
 
 
 def _segment_kind(text: str, content_start: int, content_end: int, is_list: bool, sections) -> str:
@@ -202,9 +237,12 @@ def run(s1: S1Result) -> S2Result:
                 return s
         return None
 
-    # 2. Rule scores + embedding votes for prose units.
+    # 2. Carve conversational filler off sentence edges ("oh and please | dont make anything up | ok?").
     doc = resources.parse(text)
-    prose_idx = [i for i, u in enumerate(units) if u[3] is None]
+    units = _carve(text, units, doc, section_of, s1.injections)
+
+    # 3. Rule scores + embedding votes for prose units.
+    prose_idx = [i for i, u in enumerate(units) if u[2] in ("prose", "list")]
     emb_all = resources.embed([text[units[i][0]:units[i][1]] for i in range(len(units))])
     votes = _embedding_votes(emb_all[prose_idx]) if prose_idx else np.zeros((0, len(LABELS)))
     vote_of = {i: votes[k] for k, i in enumerate(prose_idx)}
@@ -226,6 +264,12 @@ def run(s1: S1Result) -> S2Result:
             label, why = _block_label(raw, prev, sec_label)
             scores[label] = 1.0
             kind, reasons, conf = raw.kind, [why], 1.0
+        elif ukind in ("filler", "smalltalk"):
+            kind = "filler" if ukind == "filler" else _segment_kind(text, cs, ce, False, sections)
+            label, conf = "padding", 1.0
+            scores["padding"] = 1.0
+            reasons = [f"padding: {textutils.filler_kind(content)} carved off the edge of a sentence" if ukind == "filler"
+                       else "padding: small talk only — nothing left once greetings and filler are removed"]
         else:
             span = doc.char_span(cs, ce, alignment_mode="expand")
             kind = _segment_kind(text, cs, ce, ukind == "list", sections)
@@ -237,13 +281,27 @@ def run(s1: S1Result) -> S2Result:
                 vote = vote_of[i]
                 final = np.array([rule[l] for l in LABELS]) + cfg["embedding_weight"] * vote
                 best = int(final.argmax())
+                override = None
+                nxt = units[i + 1] if i + 1 < len(units) else None
+                prev_label = next((s.label for s in reversed(segments) if s.label != "padding"), None)
                 if textutils.QUOTE_LINE_RE.match(content) and rule["rules"] == 0 and rule["format"] == 0:
-                    best = LABELS.index("data")
-                    reasons.append("data: quoted line")
+                    override = "data", "data: quoted line"
+                elif (content.rstrip().endswith(":") and nxt is not None and rule["rules"] == 0 and rule["format"] == 0
+                      and (nxt[3] is not None or nxt[2] == "list" or textutils.QUOTE_LINE_RE.match(text[nxt[0]:nxt[1]]))):
+                    override = "data", "data: introduces the items below"
+                elif _CONTINUATION_RE.match(content) and prev_label in ("task", "rules", "format", "question"):
+                    override = prev_label, f"{prev_label}: verbless fragment continuing the previous part"
+                elif LABELS[best] == "padding" and rule["padding"] < 0.8:
+                    masked = final.copy()
+                    masked[best] = -np.inf
+                    override = LABELS[int(masked.argmax())], "padding needs a greeting, thanks or filler cue"
+                if override:
+                    best = LABELS.index(override[0])
+                    reasons.append(override[1])
                 label = LABELS[best]
                 reasons.append(f"embedding vote: {LABELS[int(vote.argmax())]} ({vote.max():.2f})")
                 probs = _softmax(final, 2.0)
-                conf = float(probs[best])
+                conf = max(float(probs[best]), 0.8) if override else float(probs[best])
                 scores = {l: round(float(final[k]), 3) for k, l in enumerate(LABELS)}
 
         hit = next((f for f in s1.injections if textutils.overlaps(cs, ce, f.start, f.end)), None)
@@ -257,7 +315,7 @@ def run(s1: S1Result) -> S2Result:
             section=sec.name if sec else None, remove=label == "padding",
         ))
 
-    # 3. Link parts that say the same thing; keep the most specific one.
+    # 4. Link parts that say the same thing; keep the most specific one.
     dup_ok = [k for k, s in enumerate(segments) if s.label in ("task", "rules", "format", "question", "context", "role")
               and s.kind in ("sentence", "list_item")]
     lemmas = {k: _content_lemmas(doc.char_span(segments[k].content_start, segments[k].content_end, alignment_mode="expand"))
@@ -305,7 +363,7 @@ def run(s1: S1Result) -> S2Result:
         duplicates.append(DuplicateGroup(keep=segments[keep].id, drop=[segments[k].id for k in drop],
                                          similarity=round(max(p[0] for p in pairs), 3), method=pairs[0][1]))
 
-    # 4. Requirement IDs for everything that asks something of the model.
+    # 5. Requirement IDs for everything that asks something of the model.
     requirements: list[Requirement] = []
     for seg in segments:
         if seg.label in ("task", "rules", "format", "question") and seg.kind != "header":

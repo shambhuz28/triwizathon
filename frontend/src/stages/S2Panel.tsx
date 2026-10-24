@@ -67,7 +67,7 @@ export default function S2Panel({ s2, text, segmentTokens }: { s2: S2Result; tex
                 ))}
               </div>
             </div>
-          ) : <p className="text-sm text-slate-500">Long sentences are split into clauses and conversational filler is carved off their edges. Each clause is labelled from a speech-act analysis of its dependency parse (who it is about, whether it asks for something, what a negation applies to), a logistic-regression classifier on MiniLM embeddings, and Viterbi smoothing over the sequence of parts.</p>}
+          ) : <p className="text-sm text-slate-500">Code, JSON, tables and tagged blocks are kept whole; the rest is split into sentences and list items, and conversational filler (“oh and please”, “lol”, “ok?”) is carved off their edges. Each part is labelled from weighted rule hits (regex cues, spaCy imperative detection, header sections) plus a vote from MiniLM similarity to labelled example sentences.</p>}
         </Card>
 
         <Card title={`Requirements · ${s2.requirements.length}`} subtitle="Every instruction gets an ID so it can be traced into Variant A and B">

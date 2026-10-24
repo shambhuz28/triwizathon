@@ -70,6 +70,66 @@ FILLER_PHRASES: list[tuple[re.Pattern, str]] = [(re.compile(p, re.I), why) for p
     (r"\bmake sure (?:that )?(?:you )?\b", "emphasis wrapper"),
 ]]
 
+# Conversational filler that can be carved off the edges of a sentence without changing what it asks
+# ("oh and please | dont make anything up | ok?"). Applied repeatedly, so chains like "also it would be
+# great if you could" peel off piece by piece. Hedges that carry meaning ("maybe", "only") are left alone.
+LEAD_FILLER_RE = re.compile(r"""(?:
+    (?:hi|hello|hey|hiya|yo|greetings|good\ (?:morning|afternoon|evening))(?:\ (?:there|all|team|guys|everyone))?\b[\s,!.]*
+  | (?:i\ )?hope\ (?:you(?:'re|\ are|re)\ (?:(?:doing|keeping)\ (?:well|good|great|fine|ok(?:ay)?)
+        |having\ an?\ (?:\w+\ )?(?:day|week|weekend|time))
+      |this\ (?:message|email|note)\ finds\ you\ (?:well|good)|all\ is\ well
+      |your\ (?:day|week|weekend)\ is\ going\ (?:well|good|great))\b[\s,!.]*
+  | (?:sorry\ to\ bother\ you|quick\ question)\b[\s,!.:]*
+  | (?:oh|ok(?:ay)?|alright|um+|uh+|well|anyway(?:s)?|btw|so|also|and|plus|basically|actually|honestly
+      |literally|just|please|kindly)\b(?!')[\s,]+
+  | it\ would\ be\ (?:really\ |very\ |so\ )?(?:great|nice|helpful|awesome|amazing)\ if\ you\ could\s+
+  | i\ was\ wondering\ if\ you\ could\s+
+)""", re.I | re.X)
+TRAIL_FILLER_RE = re.compile(r"""(?:
+    [\s,]*\b(?:lol|lmao|haha+|hehe+|xd)
+  | [\s,]*\bi\ (?:guess|think|suppose)
+  | [\s,]*\b(?:ok(?:ay)?|yeah|pls|plz|please|thanks?|thank\ you|thx)
+  | [\s,]*\bor\ (?:something|whatever|anything)(?:\ like\ that)?
+  | [\s,]*\band\ (?:stuff|things|so\ on)(?:\ like\ that)?
+  | [\s,]*\betc
+  | [\s,]*\bif\ that\ makes\ sense
+  | [\s,]*\bso\ (?:that\ )?it'?s\ (?:easy|easier)\ to\ (?:read|understand|follow)
+  | [\s,]*(?:\band\s+)?\bi\ (?:need|could\ use)\ (?:some\ |a\ little\ )?help
+  | [\s,]*[:;]-?[)D(]
+)[\s.!?,]*$""", re.I | re.X)
+FILLER_KINDS: list[tuple[re.Pattern, str]] = [
+    (GREETING_RE, "greeting"), (THANKS_RE, "thanks"), (PLEASANTRY_RE, "pleasantry"),
+    (re.compile(r"\b(?:sorry to bother|quick question)\b", re.I), "pleasantry"),
+    (re.compile(r"\b(?:lol|lmao|haha+|hehe+|xd)\b|[:;]-?[)D(]", re.I), "chat slang"),
+    (re.compile(r"\bi (?:guess|think|suppose)\b|\bif that makes sense\b", re.I), "hedge"),
+    (re.compile(r"\bor (?:something|whatever|anything)\b|\band (?:stuff|things|so on)\b|\betc\b|\beasy to\b", re.I),
+     "vague tail"),
+    (re.compile(r"\bit would be\b|\bwondering if\b|\bi (?:need|could use)\b", re.I), "polite wrapper"),
+    (re.compile(r"\b(?:please|kindly)\b", re.I), "politeness"),
+]
+
+
+def filler_kind(text: str) -> str:
+    return next((why for pat, why in FILLER_KINDS if pat.search(text)), "discourse filler")
+
+
+def carve_filler(text: str, start: int, end: int) -> tuple[tuple[int, int] | None, tuple[int, int], tuple[int, int] | None]:
+    """Split text[start:end] into (leading filler, core, trailing filler); fillers are None when absent.
+    Spans exclude surrounding whitespace, so the three pieces tile the sentence in order."""
+    cs, ce = start, end
+    lead = trail = None
+    while cs < ce and (m := LEAD_FILLER_RE.match(text[cs:ce])) and m.end():
+        piece_end = cs + len(m.group().rstrip())
+        lead = (lead[0] if lead else cs, piece_end)
+        cs += m.end()
+    while cs < ce and (m := TRAIL_FILLER_RE.search(text[cs:ce])):
+        piece = m.group()
+        piece_start = cs + m.start() + (len(piece) - len(piece.lstrip(" \t\n,")))
+        trail = (piece_start, trail[1] if trail else ce)
+        ce = cs + m.start()
+    return lead, (cs, ce), trail
+
+
 VAGUE_RE = re.compile(r"\b(?:or something(?: like that)?|or whatever|something like that|kind of|sort of|maybe|somehow"
                       r"|etc\.?|and so on|stuff|things like that|whatever works|if possible|some sort of)\b", re.I)
 
