@@ -20,7 +20,7 @@ export default function S2Panel({ s2, text, segmentTokens }: { s2: S2Result; tex
             </span>
           ))}
         </div>
-        <div className="prompt-text max-h-[560px] overflow-auto rounded-lg bg-slate-50 p-4">
+        <div className="prompt-text max-h-[560px] overflow-y-auto overflow-x-hidden [overflow-wrap:anywhere] rounded-lg bg-slate-50 p-4">
           {s2.segments.map(seg => {
             const lead = text.slice(seg.start, seg.content_start)
             const trail = text.slice(seg.content_end, seg.end)
@@ -55,7 +55,7 @@ export default function S2Panel({ s2, text, segmentTokens }: { s2: S2Result; tex
                 <ul className="list-disc space-y-0.5 pl-4 text-xs text-slate-600">{selected.reasons.map((r, i) => <li key={i}>{r}</li>)}</ul>
               </div>
               <div>
-                <div className="mb-1 text-xs font-medium text-slate-500">Label scores (rules + embedding vote)</div>
+                <div className="mb-1 text-xs font-medium text-slate-500">Label scores (speech acts + classifier)</div>
                 {Object.entries(selected.scores).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l, v]) => (
                   <div key={l} className="flex items-center gap-2 text-xs">
                     <span className="w-16 text-slate-600">{l}</span>
@@ -67,7 +67,7 @@ export default function S2Panel({ s2, text, segmentTokens }: { s2: S2Result; tex
                 ))}
               </div>
             </div>
-          ) : <p className="text-sm text-slate-500">Labels come from weighted rule hits (regex, imperative mood, header sections) plus a vote from MiniLM sentence-embedding similarity to labelled prototypes.</p>}
+          ) : <p className="text-sm text-slate-500">Long sentences are split into clauses and conversational filler is carved off their edges. Each clause is labelled from a speech-act analysis of its dependency parse (who it is about, whether it asks for something, what a negation applies to), a logistic-regression classifier on MiniLM embeddings, and Viterbi smoothing over the sequence of parts.</p>}
         </Card>
 
         <Card title={`Requirements · ${s2.requirements.length}`} subtitle="Every instruction gets an ID so it can be traced into Variant A and B">
@@ -80,6 +80,28 @@ export default function S2Panel({ s2, text, segmentTokens }: { s2: S2Result; tex
             ))}
           </ul>
         </Card>
+
+        {(() => {
+          const pads = s2.segments.filter(s => s.label === 'padding')
+          const toks = pads.reduce((n, s) => n + (segmentTokens[s.id] ?? 0), 0)
+          return (
+            <Card title={`Padding · ${pads.length}`} subtitle={`${toks} tokens of small talk — whole sentences, plus filler carved off the edges of instructions`}>
+              {pads.length === 0 ? <p className="text-sm text-slate-500">No padding found.</p> : (
+                <div className="flex flex-wrap gap-1.5">
+                  {pads.map(p => (
+                    <button key={p.id} onClick={() => setSelected(p)} title={p.reasons[0]}
+                      className={`rounded-md px-2 py-1 font-mono text-[11px] line-through decoration-slate-400 ${p.kind === 'filler' ? 'bg-slate-100 text-slate-500' : 'bg-slate-200 text-slate-700'}`}>
+                      {p.text}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {pads.some(p => p.kind === 'filler') && (
+                <p className="mt-2 text-[11px] text-slate-400">Light chips are filler carved from a clause (“oh and please”, “lol”, “i guess”); dark chips are whole small-talk sentences.</p>
+              )}
+            </Card>
+          )
+        })()}
 
         <Card title={`Repeats · ${s2.duplicates.length}`} subtitle="Embedding cosine + lemma overlap; the most specific is kept">
           {s2.duplicates.length === 0 ? <p className="text-sm text-slate-500">No repeated instructions.</p> : s2.duplicates.map((d, i) => (
