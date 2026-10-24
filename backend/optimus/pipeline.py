@@ -1,0 +1,84 @@
+"""Pipeline driver: runs S1 → S2 → S3 → (S4 ∥ S5).
+
+Each stage lives in its own module under optimus/stages/ and exposes a single `run(...)`.
+To change a step, edit its module; to add S6+, add a module and a line in `analyze`.
+
+    python -m optimus.pipeline path/to/prompt.txt      # print a summary
+    python -m optimus.pipeline path/to/prompt.txt --json
+"""
+from __future__ import annotations
+
+import asyncio
+import sys
+import time
+
+from .schemas import AnalyzeRequest, AnalyzeResponse, StageTiming
+from .stages import s1_clean, s2_parse, s3_task, s4_profile, s5_lock
+
+STAGES = {
+    "S1": "Clean up",
+    "S2": "Break into parts",
+    "S3": "Understand the task",
+    "S4": "Count and profile",
+    "S5": "Lock key words",
+}
+
+
+async def _timed(stage: str, timings: list[StageTiming], fn, *args, **kwargs):
+    t0 = time.perf_counter()
+    result = await asyncio.to_thread(fn, *args, **kwargs)
+    timings.append(StageTiming(stage=stage, name=STAGES[stage], ms=round((time.perf_counter() - t0) * 1000, 1)))
+    return result
+
+
+async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
+    timings: list[StageTiming] = []
+    t0 = time.perf_counter()
+
+    s1 = await _timed("S1", timings, s1_clean.run, req.prompt, redact_pii=req.redact_pii)
+    s2 = await _timed("S2", timings, s2_parse.run, s1)
+    s3 = await _timed("S3", timings, s3_task.run, s1, s2)
+    s4, s5 = await asyncio.gather(
+        _timed("S4", timings, s4_profile.run, s1, s2, s3, target_model=req.target_model,
+               monthly_volume=req.monthly_volume),
+        _timed("S5", timings, s5_lock.run, s1, s2),
+    )
+
+    timings.sort(key=lambda t: t.stage)
+    return AnalyzeResponse(s1=s1, s2=s2, s3=s3, s4=s4, s5=s5, timings=timings,
+                           total_ms=round((time.perf_counter() - t0) * 1000, 1))
+
+
+def analyze_sync(prompt: str, **kwargs) -> AnalyzeResponse:
+    return asyncio.run(analyze(AnalyzeRequest(prompt=prompt, **kwargs)))
+
+
+def _summary(r: AnalyzeResponse) -> str:
+    out = [f"S1  language={r.s1.language.code} ({r.s1.language.confidence})  changes={[c.kind for c in r.s1.changes]}"
+           f"  pii={len(r.s1.pii)}  injections={len(r.s1.injections)}",
+           f"S2  {len(r.s2.segments)} parts, {len(r.s2.blocks)} blocks, reconstructs={r.s2.reconstructs}"]
+    for s in r.s2.segments:
+        flag = " ✗dup→" + s.duplicate_of if s.duplicate_of else (" ✗" if s.remove else "")
+        out.append(f"    {s.id:>4} {s.label:<9} {s.confidence:.2f} {s.requirement_id or '':<4}{flag:<10} {s.text[:70]!r}")
+    t = r.s3
+    out.append(f"S3  task={t.task_type.type} ({t.task_type.confidence})  difficulty={t.difficulty.level}  risk={t.risk.level}"
+               f"  items={t.items}  answer≈{t.answer_length.expected_tokens} budget={t.answer_length.budget}"
+               f" max_tokens={t.answer_length.max_tokens}")
+    out += [f"    gap[{g.kind}] {g.message}" for g in t.gaps]
+    p = r.s4
+    out.append(f"S4  tokens={p.primary.count} ({p.primary.tokenizer}{'' if p.primary.exact else ' ±20%'})  removable={p.removable_tokens}"
+               f"  quality={p.quality.overall}  cost/call=${p.cost.per_call:.6f}  per 10k=${p.cost.per_10k:.2f}")
+    out.append("    surprising: " + ", ".join(f"{w.text}({w.score:.2f})" for w in p.surprising))
+    out.append("    low-info:   " + " | ".join(l.text for l in p.low_info[:15]))
+    out += [f"    warn[{w.severity}] {w.message}" for w in p.warnings]
+    out.append(f"S5  {len(r.s5.spans)} locks {r.s5.by_category}  label sets={[ls.items for ls in r.s5.label_sets]}")
+    out += [f"    {s.id:>4} {s.category:<11} {s.text[:60]!r}" for s in r.s5.spans if s.parent is None]
+    out.append("time " + "  ".join(f"{t.stage}={t.ms:.0f}ms" for t in r.timings) + f"  total={r.total_ms:.0f}ms")
+    return "\n".join(out)
+
+
+if __name__ == "__main__":
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    text = open(args[0]).read() if args else sys.stdin.read()
+    result = analyze_sync(text, redact_pii="--redact" in sys.argv)
+    print(result.model_dump_json(indent=2) if "--json" in sys.argv else _summary(result))

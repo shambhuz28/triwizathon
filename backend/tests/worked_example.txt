@@ -1,0 +1,6 @@
+Hi! I hope you are doing well. Could you please kindly help me out with something? I have a bunch of customer reviews for our food delivery app and I want you to go through them and tell me what people are saying. Basically I want to know if each review is positive, negative or neutral. Please make sure you classify each and every review as positive, negative or neutral. Also it would be really great if you could tell me the main complaint in each review if there is one. And please don't make up anything that isn't in the review. Please give it to me in a table or something like that so it's easy to read. Thanks a lot in advance, I really appreciate it!
+
+Reviews:
+1. "Food arrived 40 minutes late and cold."
+2. "Delivery partner was polite, biryani was great."
+3. "App crashed twice while paying, but the food was okay."

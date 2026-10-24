@@ -1,0 +1,54 @@
+# Starting settings (PRD Appendix B) plus the knobs used by stages S1–S5.
+
+limits:
+  min_prompt_tokens: 20
+  max_prompt_tokens: 8000
+
+s1:
+  pii:
+    min_score: 0.4          # Presidio scores phone numbers 0.4 without a context word
+    entities: [EMAIL_ADDRESS, PHONE_NUMBER, CREDIT_CARD, IBAN_CODE, IP_ADDRESS, US_SSN,
+               US_PASSPORT, US_BANK_NUMBER, CRYPTO, PERSON, IN_AADHAAR, IN_PAN]
+  injection:
+    flag_at: 0.5            # combined score needed to report a span
+    similarity_low: 0.45    # cosine to known attacks where the semantic signal starts
+    similarity_high: 0.80   # cosine treated as a certain match
+    data_boost: 0.15        # added when the text sits inside pasted data
+    prose_damping: 0.75     # multiplier when it sits in the user's own instructions
+
+s2:
+  same_sentence_similarity: 0.90   # "same sentence" cut-off (Appendix B)
+  lexical_overlap: 0.80            # token-set overlap of content lemmas
+  lexical_min_similarity: 0.60     # ...needs at least this much semantic agreement too
+  embedding_weight: 1.2            # weight of the prototype-similarity vote vs rule hits
+
+s3:
+  difficulty: {medium_at: 4.0, high_at: 8.0}
+  numeric_rules_for_high_risk: 3
+  answer_budget_multiplier: 1.2
+  max_tokens_multiplier: 1.5
+  floors:                 # minimum answer length per task type, tokens
+    classify: {base: 40, per_item: 15}
+    extract: 60
+    qa_docs: 50
+    summarise: 80
+    reasoning: 100
+    code: 150
+    debug: 150
+    plan: 150
+    creative: 200
+    translate: 40
+    chat: 40
+
+s4:
+  low_info_percentile: 25        # phrases below this informativeness percentile are removal candidates
+  surprising_top_k: 15
+  weights:                       # how the per-word informativeness score is mixed
+    surprisal: 0.40              # -log2 p(word | left context), GPT-2 small
+    excess: 0.20                 # surprisal minus predictive entropy (surprise beyond what the LM expected)
+    rarity: 0.25                 # -log2 corpus frequency (wordfreq)
+    keyphrase: 0.60              # YAKE + KeyBERT salience, 0..1
+    echo: -0.35                  # rare word made predictable only because it already appeared
+
+s5:
+  max_restriction_scope_tokens: 4
