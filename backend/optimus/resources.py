@@ -130,3 +130,6 @@ def warmup() -> None:
     presidio().analyze(text="warm up", language="en")
     tiktoken_encoding("o200k_base")
     tiktoken_encoding("cl100k_base")
+    from .documents import store
+
+    store().list()

@@ -1,5 +1,20 @@
 // Mirrors backend/optimus/schemas.py. All offsets index into s1.clean_text.
 
+export type RagMode = 'auto' | 'always' | 'off'
+export interface DocumentInfo {
+  id: string; filename: string; kind: string; size: number; pages: number | null
+  chunks: number; tokens: number; model: string; created: string
+}
+export interface UploadResponse { documents: DocumentInfo[]; errors: { filename: string; error: string }[] }
+export interface ChunkScore { doc_id: string; filename: string; chunk: number; location: string | null; score: number; preview: string; selected: boolean }
+export interface RetrievedPassage { doc_id: string; filename: string; location: string | null; chunks: number[]; score: number; text: string; tokens: number }
+export interface S0Result {
+  mode: RagMode; used: boolean; reason: string; explicit_reference: string | null
+  documents: DocumentInfo[]; missing: string[]; queries: string[]; searched_chunks: number
+  best_score: number; threshold: number; candidates: ChunkScore[]; passages: RetrievedPassage[]
+  context: string; context_tokens: number; model: string; index: string
+}
+
 export type Label = 'role' | 'task' | 'context' | 'data' | 'examples' | 'rules' | 'format' | 'question' | 'padding'
 
 export interface TextChange { kind: string; count: number; detail: string }
@@ -82,6 +97,7 @@ export interface S5Result {
 }
 
 export interface AnalyzeResponse {
+  s0: S0Result | null
   s1: S1Result; s2: S2Result; s3: S3Result; s4: S4Result; s5: S5Result
   timings: { stage: string; name: string; ms: number }[]; total_ms: number
 }

@@ -7,6 +7,69 @@ from pydantic import BaseModel, Field
 
 Label = Literal["role", "task", "context", "data", "examples", "rules", "format", "question", "padding"]
 LABELS: tuple[str, ...] = ("role", "task", "context", "data", "examples", "rules", "format", "question", "padding")
+RagMode = Literal["auto", "always", "off"]
+
+
+# ── S0 · Retrieve from documents ─────────────────────────────────────────────
+class DocumentInfo(BaseModel):
+    id: str                       # content hash, so the same file uploaded twice is indexed once
+    filename: str
+    kind: str                     # pdf, docx, pptx, xlsx, csv, txt, ...
+    size: int                     # bytes
+    pages: int | None = None      # pages, slides or sheets, when the format has them
+    chunks: int
+    tokens: int                   # o200k tokens of the extracted text
+    model: str                    # embedding model the index was built with
+    created: str
+
+
+class UploadError(BaseModel):
+    filename: str
+    error: str
+
+
+class UploadResponse(BaseModel):
+    documents: list[DocumentInfo]
+    errors: list[UploadError]
+
+
+class ChunkScore(BaseModel):
+    doc_id: str
+    filename: str
+    chunk: int
+    location: str | None
+    score: float                  # best cosine to the whole prompt or one of its sentences
+    preview: str
+    selected: bool
+
+
+class RetrievedPassage(BaseModel):
+    doc_id: str
+    filename: str
+    location: str | None          # "p. 3", "slide 2", "Sheet1: rows 41–80", a Word heading
+    chunks: list[int]             # overlapping neighbours are merged into one passage
+    score: float
+    text: str
+    tokens: int
+
+
+class S0Result(BaseModel):
+    mode: RagMode
+    used: bool
+    reason: str
+    explicit_reference: str | None    # words in the prompt that point at the files, if any
+    documents: list[DocumentInfo]     # files searched
+    missing: list[str]                # requested ids that are not in the store
+    queries: list[str]
+    searched_chunks: int
+    best_score: float
+    threshold: float
+    candidates: list[ChunkScore]
+    passages: list[RetrievedPassage]  # in reading order
+    context: str                      # the <documents> block put in front of the prompt ("" when unused)
+    context_tokens: int
+    model: str
+    index: str
 
 
 # ── S1 · Clean up ────────────────────────────────────────────────────────────
@@ -347,6 +410,8 @@ class AnalyzeRequest(BaseModel):
     target_model: str | None = None
     redact_pii: bool = False
     monthly_volume: int = Field(default=1_000_000, ge=0)
+    document_ids: list[str] = Field(default_factory=list, max_length=50)   # uploaded files S0 may draw on
+    rag_mode: RagMode = "auto"        # auto: only when the prompt is about the files
 
 
 class StageTiming(BaseModel):
@@ -356,6 +421,7 @@ class StageTiming(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
+    s0: S0Result | None = None        # present when files were attached
     s1: S1Result
     s2: S2Result
     s3: S3Result

@@ -26,6 +26,13 @@ export const LOCK_STYLE: Record<LockCategory, { bg: string; dot: string; name: s
   data: { bg: 'bg-emerald-100', dot: 'bg-emerald-500', name: 'Data' },
 }
 
+/** Badge colours for uploaded file types (S0). */
+export const KIND_STYLE: Record<string, string> = {
+  pdf: 'bg-rose-100 text-rose-700', docx: 'bg-blue-100 text-blue-700', pptx: 'bg-orange-100 text-orange-700',
+  xlsx: 'bg-emerald-100 text-emerald-700', xlsm: 'bg-emerald-100 text-emerald-700',
+  csv: 'bg-emerald-100 text-emerald-700', tsv: 'bg-emerald-100 text-emerald-700',
+}
+
 export function Card({ title, subtitle, right, children, className = '' }: {
   title?: ReactNode; subtitle?: ReactNode; right?: ReactNode; children: ReactNode; className?: string
 }) {

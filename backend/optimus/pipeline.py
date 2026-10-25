@@ -1,13 +1,16 @@
-"""Pipeline driver: runs S1 → S2 → S3 → S4 → S5.
+"""Pipeline driver: runs S0 → S1 → S2 → S3 → S4 → S5.
 
 Each stage lives in its own module under optimus/stages/ and exposes a single `run(...)`.
 Every stage reads the outputs of the stages before it: S3 and S4 work on S2's parts, and S5
 uses S2–S4 to decide which words LLMLingua-2 may remove. S5's result (locks, compressed
 prompt, per-part decisions, handoff) is the input S6/S7 will build their variants from.
+S0 runs only when files are attached: it pulls the passages the prompt is about from their
+FAISS indexes and puts them in front of the prompt, so S1–S5 see them as one data block.
 To change a step, edit its module; to add S6+, add a module and a line in `analyze`.
 
     python -m optimus.pipeline path/to/prompt.txt      # print a summary
     python -m optimus.pipeline path/to/prompt.txt --json
+    python -m optimus.pipeline path/to/prompt.txt --doc=report.pdf --doc=data.csv   # upload, then ask about them
 """
 from __future__ import annotations
 
@@ -16,9 +19,10 @@ import sys
 import time
 
 from .schemas import AnalyzeRequest, AnalyzeResponse, StageTiming
-from .stages import s1_clean, s2_parse, s3_task, s4_profile, s5_lock
+from .stages import s0_retrieve, s1_clean, s2_parse, s3_task, s4_profile, s5_lock
 
 STAGES = {
+    "S0": "Retrieve from documents",
     "S1": "Clean up",
     "S2": "Break into parts",
     "S3": "Understand the task",
@@ -38,14 +42,17 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
     timings: list[StageTiming] = []
     t0 = time.perf_counter()
 
-    s1 = await _timed("S1", timings, s1_clean.run, req.prompt, redact_pii=req.redact_pii)
+    s0 = None
+    if req.document_ids:
+        s0 = await _timed("S0", timings, s0_retrieve.run, req.prompt, req.document_ids, mode=req.rag_mode)
+    s1 = await _timed("S1", timings, s1_clean.run, s0_retrieve.augment(req.prompt, s0), redact_pii=req.redact_pii)
     s2 = await _timed("S2", timings, s2_parse.run, s1)
     s3 = await _timed("S3", timings, s3_task.run, s1, s2)
     s4 = await _timed("S4", timings, s4_profile.run, s1, s2, s3, target_model=req.target_model,
                       monthly_volume=req.monthly_volume)
     s5 = await _timed("S5", timings, s5_lock.run, s1, s2, s3, s4)
 
-    return AnalyzeResponse(s1=s1, s2=s2, s3=s3, s4=s4, s5=s5, timings=timings,
+    return AnalyzeResponse(s0=s0, s1=s1, s2=s2, s3=s3, s4=s4, s5=s5, timings=timings,
                            total_ms=round((time.perf_counter() - t0) * 1000, 1))
 
 
@@ -54,7 +61,11 @@ def analyze_sync(prompt: str, **kwargs) -> AnalyzeResponse:
 
 
 def _summary(r: AnalyzeResponse) -> str:
-    out = [f"S1  language={r.s1.language.code} ({r.s1.language.confidence})  changes={[c.kind for c in r.s1.changes]}"
+    out = []
+    if r.s0:
+        out.append(f"S0  used={r.s0.used}  best={r.s0.best_score} (needs {r.s0.threshold})  {r.s0.reason}")
+        out += [f"    {p.score:.2f} {p.filename} {p.location or ''} chunks={p.chunks} {p.text[:60]!r}" for p in r.s0.passages]
+    out += [f"S1  language={r.s1.language.code} ({r.s1.language.confidence})  changes={[c.kind for c in r.s1.changes]}"
            f"  pii={len(r.s1.pii)}  injections={len(r.s1.injections)}",
            f"S2  {len(r.s2.segments)} parts, {len(r.s2.blocks)} blocks, reconstructs={r.s2.reconstructs}"]
     for s in r.s2.segments:
@@ -85,7 +96,13 @@ def _summary(r: AnalyzeResponse) -> str:
 
 
 if __name__ == "__main__":
+    from pathlib import Path
+
+    from . import documents
+
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     text = open(args[0], encoding="utf-8").read() if args else sys.stdin.read()
-    result = analyze_sync(text, redact_pii="--redact" in sys.argv)
+    doc_ids = [documents.store().add(Path(p).name, Path(p).read_bytes()).id
+               for a in sys.argv[1:] if a.startswith("--doc=") for p in [a[len("--doc="):]]]
+    result = analyze_sync(text, redact_pii="--redact" in sys.argv, document_ids=doc_ids)
     print(result.model_dump_json(indent=2) if "--json" in sys.argv else _summary(result))

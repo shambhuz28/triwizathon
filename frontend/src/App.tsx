@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
-import type { AnalyzeResponse, ModelInfo } from './types'
+import type { AnalyzeResponse, DocumentInfo, ModelInfo, RagMode } from './types'
 import { SAMPLES } from './samples'
 import { Stat, fmtInt, fmtUsd } from './ui'
+import Documents from './Documents'
+import S0Panel from './stages/S0Panel'
 import S1Panel from './stages/S1Panel'
 import S2Panel from './stages/S2Panel'
 import S3Panel from './stages/S3Panel'
@@ -9,6 +11,7 @@ import S4Panel from './stages/S4Panel'
 import S5Panel from './stages/S5Panel'
 
 const STAGES = [
+  { id: 'S0', name: 'Retrieve', blurb: 'Relevant passages from attached files (FAISS)' },
   { id: 'S1', name: 'Clean up', blurb: 'Normalise, language, personal info, injected orders' },
   { id: 'S2', name: 'Break into parts', blurb: 'Blocks, sentences, labels, repeats' },
   { id: 'S3', name: 'Understand the task', blurb: 'Type, difficulty, risk, gaps, answer length' },
@@ -27,9 +30,12 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tab, setTab] = useState<StageId>('S2')
+  const [docs, setDocs] = useState<DocumentInfo[]>([])
+  const [ragMode, setRagMode] = useState<RagMode>('auto')
 
   useEffect(() => {
     fetch('/api/v1/models').then(r => r.json()).then(d => { setModels(d.models); setModel(d.default) }).catch(() => {})
+    fetch('/api/v1/documents').then(r => r.json()).then(setDocs).catch(() => {})
   }, [])
 
   async function run() {
@@ -38,10 +44,15 @@ export default function App() {
     try {
       const r = await fetch('/api/v1/analyze', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, target_model: model, redact_pii: redact, monthly_volume: volume }),
+        body: JSON.stringify({
+          prompt, target_model: model, redact_pii: redact, monthly_volume: volume,
+          document_ids: docs.map(d => d.id), rag_mode: ragMode,
+        }),
       })
       if (!r.ok) throw new Error(`${r.status} ${await r.text()}`)
-      setResult(await r.json())
+      const res: AnalyzeResponse = await r.json()
+      setResult(res)
+      if (!res.s0 && tab === 'S0') setTab('S2')
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -50,10 +61,11 @@ export default function App() {
   }
 
   const r = result
+  const stages = r?.s0 ? STAGES : STAGES.filter(s => s.id !== 'S0')
   const timing = (id: string) => r?.timings.find(t => t.stage === id)?.ms
   const warnCount = (id: StageId) => {
     if (!r) return 0
-    return { S1: r.s1.injections.length + (r.s1.pii_redacted ? 0 : r.s1.pii.length), S2: r.s2.duplicates.length, S3: r.s3.gaps.length, S4: r.s4.warnings.length, S5: r.s5.compression.missing_locks.length }[id]
+    return { S0: r.s0?.missing.length ?? 0, S1: r.s1.injections.length + (r.s1.pii_redacted ? 0 : r.s1.pii.length), S2: r.s2.duplicates.length, S3: r.s3.gaps.length, S4: r.s4.warnings.length, S5: r.s5.compression.missing_locks.length }[id]
   }
 
   return (
@@ -63,7 +75,7 @@ export default function App() {
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">OP</div>
           <div>
             <h1 className="text-lg font-semibold leading-tight text-slate-900">OptimusPrompt</h1>
-            <p className="text-xs text-slate-500">Analysis pipeline · stages S1–S5 · all local models, no API cost</p>
+            <p className="text-xs text-slate-500">Analysis pipeline · stages S0–S5 · all local models, no API cost</p>
           </div>
         </div>
       </header>
@@ -100,11 +112,20 @@ export default function App() {
               {loading ? 'Analysing…' : 'Analyse prompt'}
             </button>
           </div>
+          <Documents docs={docs} setDocs={setDocs} mode={ragMode} setMode={setRagMode} />
           {error && <p className="mt-3 rounded-md bg-rose-50 p-2 text-sm text-rose-700">Request failed: {error}. Is the backend running on :8000?</p>}
         </section>
 
         {r && (
           <>
+            {r.s0?.used && (
+              <button onClick={() => setTab('S0')}
+                className="flex w-full flex-wrap items-center gap-x-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2 text-left text-sm text-emerald-900 hover:border-emerald-300">
+                <span className="font-semibold">S0 added {r.s0.passages.length} passage{r.s0.passages.length === 1 ? '' : 's'} ({fmtInt(r.s0.context_tokens)} tokens)</span>
+                <span className="text-emerald-700">from {[...new Set(r.s0.passages.map(p => p.filename))].join(', ')} in front of your prompt</span>
+                <span className="ml-auto text-xs font-medium text-emerald-700">See S0 →</span>
+              </button>
+            )}
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
               <Stat label="Input tokens" value={fmtInt(r.s4.primary.count)} sub={r.s4.primary.exact ? 'exact' : `${r.s4.primary.tokenizer} ±20%`} />
               <Stat label="Padding + repeats" value={fmtInt(r.s4.removable_tokens)} sub={`${((r.s4.removable_tokens / Math.max(r.s4.primary.count, 1)) * 100).toFixed(0)}% of the prompt`} tone={r.s4.removable_tokens ? 'bad' : 'good'} />
@@ -116,8 +137,8 @@ export default function App() {
               <Stat label="Cost / month" value={fmtUsd(r.s4.cost.per_month, 0)} sub={`${fmtUsd(r.s4.cost.per_call)} per call`} />
             </div>
 
-            <nav className="grid grid-cols-1 gap-2 sm:grid-cols-5">
-              {STAGES.map(s => (
+            <nav className={`grid grid-cols-1 gap-2 ${stages.length > 5 ? 'sm:grid-cols-3 xl:grid-cols-6' : 'sm:grid-cols-5'}`}>
+              {stages.map(s => (
                 <button key={s.id} onClick={() => setTab(s.id)}
                   className={`relative rounded-xl border px-3 py-2.5 text-left transition ${tab === s.id ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
                   <div className="flex items-center justify-between">
@@ -132,6 +153,7 @@ export default function App() {
             </nav>
             <p className="-mt-2 text-right text-[11px] text-slate-400">Each stage builds on the ones before · total {r.total_ms.toFixed(0)} ms</p>
 
+            {tab === 'S0' && r.s0 && <S0Panel s0={r.s0} />}
             {tab === 'S1' && <S1Panel s1={r.s1} />}
             {tab === 'S2' && <S2Panel s2={r.s2} text={r.s1.clean_text} segmentTokens={r.s4.segment_tokens} />}
             {tab === 'S3' && <S3Panel s3={r.s3} />}

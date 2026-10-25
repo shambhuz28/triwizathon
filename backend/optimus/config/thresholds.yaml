@@ -4,6 +4,21 @@ limits:
   min_prompt_tokens: 20
   max_prompt_tokens: 8000
 
+s0:                              # retrieval from uploaded documents, runs before S1 when files are attached
+  store_dir: data/documents      # relative to backend/; the OPTIMUS_DOC_DIR environment variable overrides it
+  max_file_mb: 25
+  chunk_words: 140               # MiniLM reads at most 256 word pieces (~190 words), so chunks stay under that
+  chunk_overlap_words: 30        # trailing sentences repeated at the start of the next chunk
+  min_chunk_chars: 20            # shorter chunks (page numbers, stray labels) are not indexed
+  max_queries: 24                # prompt sentences searched besides the whole prompt
+  search_k: 20                   # nearest chunks fetched per file and query
+  top_k: 6                       # most chunks passed on
+  min_score: 0.35                # cosine a chunk needs before the prompt counts as being about the documents
+                                 # (a prompt that points at a file, "the attached report", counts anyway)
+  relative_drop: 0.15            # chunks further than this below the best score are left out
+  min_query_score: 0.22          # ...except a sub-question's own best chunk, if it reaches this
+  max_context_tokens: 1500       # o200k tokens of document text prepended to the prompt
+
 s1:
   pii:
     min_score: 0.4          # Presidio scores phone numbers 0.4 without a context word

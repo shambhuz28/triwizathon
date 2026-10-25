@@ -21,6 +21,7 @@ import regex as re
 from .. import resources, textutils
 from ..config import thresholds
 from ..schemas import AnswerLength, Difficulty, Gap, Risk, S1Result, S2Result, S3Result, TaskType
+from .s0_retrieve import CONTEXT_TAG
 
 TASK_TYPES = ["code", "debug", "summarise", "extract", "classify", "qa_docs", "reasoning",
               "creative", "translate", "plan", "chat"]
@@ -106,7 +107,7 @@ def _num(s: str) -> int:
     return int(s) if s.isdigit() else _WORD_NUMS.get(s.lower(), 0)
 
 
-def classify_task(instr_text: str, has_code_block: bool, task_text: str = "") -> TaskType:
+def classify_task(instr_text: str, has_code_block: bool, task_text: str = "", has_documents: bool = False) -> TaskType:
     """Keyword hits in the task/question parts count fully; hits in the other instruction parts
     (rules, format, role, context) count half, so "never write code" cannot outvote the task."""
     focus = task_text or instr_text
@@ -119,6 +120,8 @@ def classify_task(instr_text: str, has_code_block: bool, task_text: str = "") ->
     if has_code_block:
         kw[TASK_TYPES.index("code")] += 1.0
         kw[TASK_TYPES.index("debug")] += 0.5
+    if has_documents:            # S0 put retrieved passages in front of the prompt
+        kw[TASK_TYPES.index("qa_docs")] += 2.5
     protos = resources.embed([PROTOTYPES[t] for t in TASK_TYPES])
     q = resources.embed([focus or "chat"])[0]
     sims = protos @ q
@@ -269,11 +272,12 @@ def run(s1: S1Result, s2: S2Result) -> S3Result:
     instr_text = " ".join(s.text for s in live if s.label in ("role", "task", "rules", "format", "question", "context"))
     data_text = " ".join(s.text for s in s2.segments if s.label in ("data", "examples"))
     has_code = any(b.kind == "code" for b in s2.blocks)
+    has_docs = any(b.kind == "tagged" and b.meta.get("tag") == CONTEXT_TAG for b in s2.blocks)
     enc = resources.tiktoken_encoding("o200k_base")
     live_tokens = len(enc.encode("".join(s1.clean_text[s.start:s.end] for s in live)))
     data_tokens = len(enc.encode(data_text)) if data_text else 0
 
-    task = classify_task(instr_text, has_code, task_text)
+    task = classify_task(instr_text, has_code, task_text, has_docs)
     items = s2.data_items
     has_format = any(s.label == "format" for s in live)
     answer = estimate_answer_length(task.type, instr_text, items, data_tokens, has_format)
