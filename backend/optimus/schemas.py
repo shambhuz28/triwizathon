@@ -70,6 +70,11 @@ class S0Result(BaseModel):
     context_tokens: int
     model: str
     index: str
+    # Token totals for comparing the two ways of asking about the files (o200k):
+    prompt_tokens: int = 0            # the user's own prompt
+    document_tokens: int = 0          # every attached file in full
+    tokens_before: int = 0            # without retrieval: whole files + prompt
+    tokens_after: int = 0             # with retrieval: retrieved passages + prompt
 
 
 # ── S1 · Clean up ────────────────────────────────────────────────────────────
@@ -404,6 +409,88 @@ class S5Result(BaseModel):
     handoff: Handoff
 
 
+# ── S6 / S7 · Variant A (detailed) and Variant B (short) ─────────────────────
+class VariantCheck(BaseModel):
+    locks_preserved: bool
+    missing_locks: list[str]
+    requirements_covered: list[str]
+    requirements_missing: list[str]
+    within_size_limit: bool
+
+
+class RequirementTrace(BaseModel):
+    id: str
+    text: str
+    where: str                    # section / row the requirement ended up in, or why it is gone
+
+
+class Baseline(BaseModel):
+    """What the variants are compared with: the prompt as written, or, when files were attached,
+    the prompt plus the whole files (what it would cost to send them without retrieval)."""
+    label: str
+    tokens: int
+    prompt_tokens: int            # the cleaned prompt S1–S5 worked on (after retrieval, if any)
+    cost: CostPreview
+
+
+class PromptSection(BaseModel):
+    key: Literal["role", "goal", "rules", "assumptions", "examples", "plan", "format", "self_check", "inputs",
+                 "reminder"]
+    title: str
+    text: str
+    source: Literal["copied", "built"]    # copied from S2/S5 parts, or built from S3/S5 findings
+    segment_ids: list[str]
+    tokens: int
+
+
+class SkippedSection(BaseModel):
+    key: str
+    title: str
+    reason: str
+
+
+class S6Result(BaseModel):
+    prompt: str
+    sections: list[PromptSection]
+    skipped: list[SkippedSection]
+    tokens: int
+    size_limit: int               # PRD: 2.5 × the original, or original + 250 for very short prompts
+    answer_tokens_est: int
+    answer_basis: str
+    max_tokens: int
+    baseline: Baseline
+    cost: CostPreview
+    checks: VariantCheck
+    trace: list[RequirementTrace]
+
+
+class LadderStep(BaseModel):
+    level: Literal["L0", "L1", "L2", "L3", "L4", "L5"]
+    name: str
+    status: Literal["applied", "no change", "reverted", "skipped"]
+    reason: str
+    tokens: int                   # plain-text prompt tokens after the step
+    prompt: str
+
+
+class S7Result(BaseModel):
+    prompt: str                   # plain text
+    csv: str                      # the same prompt as field,value rows — the Variant B deliverable
+    tokens: int
+    csv_tokens: int
+    steps: list[LadderStep]
+    reached: str                  # highest step kept
+    max_ladder_level: Literal["L2", "L5"]
+    answer_tokens_est: int
+    answer_basis: str
+    answer_budget: int
+    max_tokens: int
+    baseline: Baseline
+    cost: CostPreview             # for the CSV prompt
+    checks: VariantCheck
+    trace: list[RequirementTrace]
+
+
 # ── Pipeline ─────────────────────────────────────────────────────────────────
 class AnalyzeRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=100_000)
@@ -427,5 +514,7 @@ class AnalyzeResponse(BaseModel):
     s3: S3Result
     s4: S4Result
     s5: S5Result
+    s6: S6Result
+    s7: S7Result
     timings: list[StageTiming]
     total_ms: float

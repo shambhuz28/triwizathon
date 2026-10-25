@@ -136,10 +136,15 @@ def augment(prompt: str, s0: S0Result | None) -> str:
 def run(prompt: str, document_ids: list[str], mode: RagMode = "auto") -> S0Result:
     cfg = thresholds()["s0"]
     docs, missing = documents.store().get(document_ids)
+    enc = resources.tiktoken_encoding("o200k_base")
+    prompt_tokens = len(enc.encode(prompt))
+    document_tokens = sum(d.info.tokens for d in docs)
     result = dict(mode=mode, used=False, explicit_reference=None, documents=[d.info for d in docs], missing=missing,
                   queries=[], searched_chunks=sum(d.index.ntotal for d in docs), best_score=0.0,
                   threshold=cfg["min_score"], candidates=[], passages=[], context="", context_tokens=0,
-                  model=resources.EMBED_MODEL, index="FAISS IndexFlatIP (cosine, exact)")
+                  model=resources.EMBED_MODEL, index="FAISS IndexFlatIP (cosine, exact)",
+                  prompt_tokens=prompt_tokens, document_tokens=document_tokens,
+                  tokens_before=document_tokens + prompt_tokens, tokens_after=prompt_tokens)
     if mode == "off":
         return S0Result(reason="Retrieval is switched off.", **result)
     if not docs:
@@ -196,6 +201,7 @@ def run(prompt: str, document_ids: list[str], mode: RagMode = "auto") -> S0Resul
         passages = trial
     chosen = {(d, c) for d, c, _ in picked}
     context = build_context(passages)
+    context_tokens = len(enc.encode(context))
     if whole:
         names = ", ".join(dict.fromkeys(docs[d].info.filename for d, _, _ in picked))
         reason = (f"The prompt refers to the files (“{explicit}”) without a passage standing out, so "
@@ -205,8 +211,8 @@ def run(prompt: str, document_ids: list[str], mode: RagMode = "auto") -> S0Resul
     else:
         reason = f"The prompt matches the files (best {best:.2f} ≥ {threshold:.2f})"
     result.update(
-        used=True, passages=passages, context=context,
-        context_tokens=len(resources.tiktoken_encoding("o200k_base").encode(context)),
+        used=True, passages=passages, context=context, context_tokens=context_tokens,
+        tokens_after=len(enc.encode(f"{context}\n\n{prompt}")),      # what augment() hands S1
         candidates=[_candidate(docs, d, c, s, (d, c) in chosen) for s, d, c in scored[:max(8, len(picked))]],
     )
     return S0Result(reason=f"{reason}: {len(picked)} chunk{'s' if len(picked) != 1 else ''} from "

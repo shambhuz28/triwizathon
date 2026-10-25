@@ -1,12 +1,13 @@
-"""Pipeline driver: runs S0 → S1 → S2 → S3 → S4 → S5.
+"""Pipeline driver: runs S0 → S1 → S2 → S3 → S4 → S5 → S6 + S7.
 
 Each stage lives in its own module under optimus/stages/ and exposes a single `run(...)`.
 Every stage reads the outputs of the stages before it: S3 and S4 work on S2's parts, and S5
 uses S2–S4 to decide which words LLMLingua-2 may remove. S5's result (locks, compressed
-prompt, per-part decisions, handoff) is the input S6/S7 will build their variants from.
+prompt, per-part decisions, handoff) is the input S6 and S7 build their variants from: S6 the
+detailed Variant A, S7 the short Variant B (as CSV).
 S0 runs only when files are attached: it pulls the passages the prompt is about from their
 FAISS indexes and puts them in front of the prompt, so S1–S5 see them as one data block.
-To change a step, edit its module; to add S6+, add a module and a line in `analyze`.
+To change a step, edit its module; to add a stage, add a module and a line in `analyze`.
 
     python -m optimus.pipeline path/to/prompt.txt      # print a summary
     python -m optimus.pipeline path/to/prompt.txt --json
@@ -19,7 +20,7 @@ import sys
 import time
 
 from .schemas import AnalyzeRequest, AnalyzeResponse, StageTiming
-from .stages import s0_retrieve, s1_clean, s2_parse, s3_task, s4_profile, s5_lock
+from .stages import s0_retrieve, s1_clean, s2_parse, s3_task, s4_profile, s5_lock, s6_variant_a, s7_variant_b
 
 STAGES = {
     "S0": "Retrieve from documents",
@@ -28,6 +29,8 @@ STAGES = {
     "S3": "Understand the task",
     "S4": "Count and profile",
     "S5": "Lock and compress",
+    "S6": "Variant A (detailed)",
+    "S7": "Variant B (short, CSV)",
 }
 
 
@@ -51,8 +54,10 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
     s4 = await _timed("S4", timings, s4_profile.run, s1, s2, s3, target_model=req.target_model,
                       monthly_volume=req.monthly_volume)
     s5 = await _timed("S5", timings, s5_lock.run, s1, s2, s3, s4)
+    s6 = await _timed("S6", timings, s6_variant_a.run, s1, s2, s3, s4, s5, s0)
+    s7 = await _timed("S7", timings, s7_variant_b.run, s2, s3, s4, s5, s0, s1.clean_text)
 
-    return AnalyzeResponse(s0=s0, s1=s1, s2=s2, s3=s3, s4=s4, s5=s5, timings=timings,
+    return AnalyzeResponse(s0=s0, s1=s1, s2=s2, s3=s3, s4=s4, s5=s5, s6=s6, s7=s7, timings=timings,
                            total_ms=round((time.perf_counter() - t0) * 1000, 1))
 
 
@@ -91,6 +96,15 @@ def _summary(r: AnalyzeResponse) -> str:
     out.append("    prompt: " + c.prompt.replace("\n", "\n            "))
     h = r.s5.handoff
     out.append(f"    handoff  max ladder={h.max_ladder_level}  budget={h.answer_budget}  sections={h.sections}")
+    a, b = r.s6, r.s7
+    out.append(f"S6  Variant A {a.tokens} tokens (limit {a.size_limit}) vs {a.baseline.label} {a.baseline.tokens}"
+               f"  sections={[x.key for x in a.sections]}  locks kept={a.checks.locks_preserved}"
+               f"  ${a.cost.per_call:.6f}/call vs ${a.baseline.cost.per_call:.6f}")
+    out.append("    " + a.prompt.replace("\n", "\n    "))
+    out.append(f"S7  Variant B {b.csv_tokens} tokens as CSV ({b.tokens} plain)  reached={b.reached} (max {b.max_ladder_level})"
+               f"  locks kept={b.checks.locks_preserved}  ${b.cost.per_call:.6f}/call")
+    out += [f"    {s.level} {s.status:<9} {s.tokens:>5}  {s.reason}" for s in b.steps]
+    out.append("    " + b.csv.replace("\n", "\n    "))
     out.append("time " + "  ".join(f"{t.stage}={t.ms:.0f}ms" for t in r.timings) + f"  total={r.total_ms:.0f}ms")
     return "\n".join(out)
 

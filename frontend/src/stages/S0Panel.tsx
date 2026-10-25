@@ -45,6 +45,20 @@ export default function S0Panel({ s0 }: { s0: S0Result }) {
           {s0.missing.length > 0 && <p className="mt-3 rounded-md bg-amber-50 p-2 text-xs text-amber-800">{s0.missing.length} attached file(s) are no longer in the store.</p>}
         </Card>
 
+        <Card title="Tokens before and after retrieval" subtitle="o200k · without retrieval the whole files would go in with the prompt">
+          <dl className="space-y-1.5 text-xs">
+            {[['Prompt', s0.prompt_tokens], ['Whole files', s0.document_tokens], ['Retrieved passages', s0.context_tokens]].map(([k, v]) => (
+              <div key={k} className="flex justify-between"><dt className="text-slate-500">{k}</dt><dd className="font-mono">{fmtInt(v as number)}</dd></div>
+            ))}
+            <div className="flex justify-between border-t border-slate-100 pt-1.5"><dt className="font-medium text-slate-700">Before: whole files + prompt</dt><dd className="font-mono font-semibold">{fmtInt(s0.tokens_before)}</dd></div>
+            <div className="flex justify-between"><dt className="font-medium text-slate-700">After: passages + prompt</dt><dd className="font-mono font-semibold">{fmtInt(s0.tokens_after)}</dd></div>
+            <div className="flex justify-between"><dt className="text-slate-500">Saved by retrieval</dt>
+              <dd className={`font-mono font-semibold ${s0.tokens_after < s0.tokens_before ? 'text-emerald-600' : 'text-slate-600'}`}>
+                {fmtInt(s0.tokens_before - s0.tokens_after)} ({((1 - s0.tokens_after / Math.max(s0.tokens_before, 1)) * 100).toFixed(0)}%)
+              </dd></div>
+          </dl>
+        </Card>
+
         <Card title={`Files searched · ${s0.documents.length}`} subtitle={`${fmtInt(s0.searched_chunks)} chunks · ${s0.model.split('/').pop()} · ${s0.index}`}>
           <ul className="space-y-1 text-xs">
             {s0.documents.map(d => (

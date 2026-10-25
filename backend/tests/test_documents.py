@@ -178,3 +178,14 @@ def test_each_sub_question_gets_its_passage(library):
     r = s0_retrieve.run("What did the north region sell in Q3, and what are the risks?", list(library.values()))
     assert "what are the risks?" in r.queries
     assert {p.location for p in r.passages if p.filename == "q3_review.pptx"} == {"slide 1", "slide 2"}
+
+
+def test_document_question_counts_tokens_before_and_after_retrieval(library):
+    r = analyze_sync("How many days of sick leave do I get?", document_ids=list(library.values()))
+    s0 = r.s0
+    assert s0.document_tokens == sum(d.tokens for d in s0.documents)
+    assert s0.tokens_before == s0.document_tokens + s0.prompt_tokens
+    assert abs(s0.tokens_after - (s0.context_tokens + s0.prompt_tokens)) <= 2      # joined by a blank line
+    assert r.s6.baseline.tokens == s0.tokens_before and r.s7.baseline.tokens == s0.tokens_before
+    assert "sick leave" in next(x.text for x in r.s6.sections if x.key == "goal")    # the question is the goal, not data
+    assert r.s6.checks.locks_preserved and r.s7.checks.locks_preserved

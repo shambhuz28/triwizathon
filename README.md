@@ -1,6 +1,6 @@
 # OptimusPrompt — triwizathon
 
-Analysis pipeline stages **S0–S5** from the PRD (`worst case .pdf`) plus a web UI.
+Analysis pipeline stages **S0–S7** from the PRD (`worst case .pdf`) plus a web UI.
 
 | Stage | File | What it does | Libraries |
 |---|---|---|---|
@@ -10,8 +10,11 @@ Analysis pipeline stages **S0–S5** from the PRD (`worst case .pdf`) plus a web
 | S3 Understand the task | `backend/optimus/stages/s3_task.py` | task type (from S2's task/question parts), difficulty, risk, gaps linked to S2 parts, answer-length budget | spaCy, MiniLM, tiktoken |
 | S4 Count and profile | `backend/optimus/stages/s4_profile.py` | token counts, cost preview, surprisal/entropy heat map, surprising words, low-info phrases (incl. S2 padding/repeats), informativeness per S2 part, quality score, warnings | tiktoken, GPT-2 small, wordfreq, YAKE, KeyBERT |
 | S5 Lock and compress | `backend/optimus/stages/s5_lock.py` | locks numbers, names, identifiers, restrictions, label sets, code, quotes, placeholders; removes unnecessary words; hands off to S6/S7 | regex, spaCy NER + dependency parse, LLMLingua-2 |
+| S6 Variant A (detailed) | `backend/optimus/stages/s6_variant_a.py` | up to ten sections (role, goal, rules, assumptions, examples, plan, format, self-check, fenced inputs, reminder); implied constraints added, gaps marked as assumptions, every lock kept, ≤ 2.5× the original | rule-based, tiktoken |
+| S7 Variant B (short, CSV) | `backend/optimus/stages/s7_variant_b.py` | reduction ladder L0–L5 with a lock/requirement check after each step (high-risk stops at L2), answer cap, delivered as `field,value` CSV | rule-based, tiktoken |
 
-`backend/optimus/pipeline.py` is the driver: S0 → S1 → S2 → S3 → S4 → S5 (S0 only when files are attached). Each stage reads the outputs of the ones
+`backend/optimus/pipeline.py` is the driver: S0 → S1 → S2 → S3 → S4 → S5 → S6 → S7 (S0 only when files are attached).
+For a question about attached files, S0 reports `tokens_before` (whole files + prompt) and `tokens_after` (retrieved passages + prompt); S6/S7 compare against `tokens_before`. Each stage reads the outputs of the ones
 before it and exposes one `run(...)`, so a step can be changed on its own. Prices and thresholds live in
 `backend/optimus/config/*.yaml`.
 

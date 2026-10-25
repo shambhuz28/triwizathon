@@ -13,6 +13,7 @@ export interface S0Result {
   documents: DocumentInfo[]; missing: string[]; queries: string[]; searched_chunks: number
   best_score: number; threshold: number; candidates: ChunkScore[]; passages: RetrievedPassage[]
   context: string; context_tokens: number; model: string; index: string
+  prompt_tokens: number; document_tokens: number; tokens_before: number; tokens_after: number
 }
 
 export type Label = 'role' | 'task' | 'context' | 'data' | 'examples' | 'rules' | 'format' | 'question' | 'padding'
@@ -65,12 +66,13 @@ export interface S4Result {
   keyphrases: { text: string; score: number; source: string }[]
   quality: { overall: number; clarity: number; specificity: number; rules: number; structure: number; repetition: number }
   warnings: { code: string; severity: 'info' | 'warn' | 'error'; message: string; hint: string; spans: [number, number][] }[]
-  cost: {
-    model: string; model_label: string; input_tokens: number; output_tokens_est: number; price_input: number; price_output: number
-    per_call: number; per_10k: number; per_month: number; monthly_volume: number; answer_seconds: number
-    output_share_of_cost: number; last_checked: string
-  }
+  cost: CostPreview
   lm: string
+}
+export interface CostPreview {
+  model: string; model_label: string; input_tokens: number; output_tokens_est: number; price_input: number; price_output: number
+  per_call: number; per_10k: number; per_month: number; monthly_volume: number; answer_seconds: number
+  output_share_of_cost: number; last_checked: string
 }
 
 export type LockCategory = 'number' | 'name' | 'identifier' | 'restriction' | 'label' | 'code' | 'quote' | 'placeholder' | 'format' | 'data'
@@ -96,9 +98,32 @@ export interface S5Result {
   segments: PIRSegment[]; compression: Compression; handoff: Handoff
 }
 
+export interface VariantCheck {
+  locks_preserved: boolean; missing_locks: string[]; requirements_covered: string[]; requirements_missing: string[]
+  within_size_limit: boolean
+}
+export interface RequirementTrace { id: string; text: string; where: string }
+export interface Baseline { label: string; tokens: number; prompt_tokens: number; cost: CostPreview }
+export type SectionKey = 'role' | 'goal' | 'rules' | 'assumptions' | 'examples' | 'plan' | 'format' | 'self_check' | 'inputs' | 'reminder'
+export interface PromptSection { key: SectionKey; title: string; text: string; source: 'copied' | 'built'; segment_ids: string[]; tokens: number }
+export interface S6Result {
+  prompt: string; sections: PromptSection[]; skipped: { key: string; title: string; reason: string }[]
+  tokens: number; size_limit: number; answer_tokens_est: number; answer_basis: string; max_tokens: number
+  baseline: Baseline; cost: CostPreview; checks: VariantCheck; trace: RequirementTrace[]
+}
+export interface LadderStep {
+  level: 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5'; name: string; status: 'applied' | 'no change' | 'reverted' | 'skipped'
+  reason: string; tokens: number; prompt: string
+}
+export interface S7Result {
+  prompt: string; csv: string; tokens: number; csv_tokens: number; steps: LadderStep[]; reached: string
+  max_ladder_level: 'L2' | 'L5'; answer_tokens_est: number; answer_basis: string; answer_budget: number; max_tokens: number
+  baseline: Baseline; cost: CostPreview; checks: VariantCheck; trace: RequirementTrace[]
+}
+
 export interface AnalyzeResponse {
   s0: S0Result | null
-  s1: S1Result; s2: S2Result; s3: S3Result; s4: S4Result; s5: S5Result
+  s1: S1Result; s2: S2Result; s3: S3Result; s4: S4Result; s5: S5Result; s6: S6Result; s7: S7Result
   timings: { stage: string; name: string; ms: number }[]; total_ms: number
 }
 

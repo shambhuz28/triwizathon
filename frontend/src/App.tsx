@@ -9,6 +9,8 @@ import S2Panel from './stages/S2Panel'
 import S3Panel from './stages/S3Panel'
 import S4Panel from './stages/S4Panel'
 import S5Panel from './stages/S5Panel'
+import S6Panel from './stages/S6Panel'
+import S7Panel from './stages/S7Panel'
 
 const STAGES = [
   { id: 'S0', name: 'Retrieve', blurb: 'Relevant passages from attached files (FAISS)' },
@@ -17,6 +19,8 @@ const STAGES = [
   { id: 'S3', name: 'Understand the task', blurb: 'Type, difficulty, risk, gaps, answer length' },
   { id: 'S4', name: 'Count and profile', blurb: 'Tokens, surprisal heat map, quality, warnings' },
   { id: 'S5', name: 'Lock and compress', blurb: 'Lock key words, LLMLingua-2 removes the rest of the waste' },
+  { id: 'S6', name: 'Variant A', blurb: 'Detailed: sections, exact format, constraints, self-check' },
+  { id: 'S7', name: 'Variant B', blurb: 'Short: reduction ladder, answer cap, CSV output' },
 ] as const
 type StageId = typeof STAGES[number]['id']
 
@@ -65,7 +69,7 @@ export default function App() {
   const timing = (id: string) => r?.timings.find(t => t.stage === id)?.ms
   const warnCount = (id: StageId) => {
     if (!r) return 0
-    return { S0: r.s0?.missing.length ?? 0, S1: r.s1.injections.length + (r.s1.pii_redacted ? 0 : r.s1.pii.length), S2: r.s2.duplicates.length, S3: r.s3.gaps.length, S4: r.s4.warnings.length, S5: r.s5.compression.missing_locks.length }[id]
+    return { S0: r.s0?.missing.length ?? 0, S1: r.s1.injections.length + (r.s1.pii_redacted ? 0 : r.s1.pii.length), S2: r.s2.duplicates.length, S3: r.s3.gaps.length, S4: r.s4.warnings.length, S5: r.s5.compression.missing_locks.length, S6: r.s6.checks.missing_locks.length + r.s6.checks.requirements_missing.length, S7: r.s7.checks.missing_locks.length + r.s7.checks.requirements_missing.length }[id]
   }
 
   return (
@@ -75,7 +79,7 @@ export default function App() {
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">OP</div>
           <div>
             <h1 className="text-lg font-semibold leading-tight text-slate-900">OptimusPrompt</h1>
-            <p className="text-xs text-slate-500">Analysis pipeline · stages S0–S5 · all local models, no API cost</p>
+            <p className="text-xs text-slate-500">Analysis pipeline · stages S0–S7 · all local models, no API cost</p>
           </div>
         </div>
       </header>
@@ -127,7 +131,10 @@ export default function App() {
               </button>
             )}
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-              <Stat label="Input tokens" value={fmtInt(r.s4.primary.count)} sub={r.s4.primary.exact ? 'exact' : `${r.s4.primary.tokenizer} ±20%`} />
+              {r.s0?.used
+                ? <Stat label="Input tokens" value={<>{fmtInt(r.s0.tokens_before)} <span className="text-slate-400">→</span> {fmtInt(r.s0.tokens_after)}</>}
+                    sub={`whole files + prompt → after retrieval (−${((1 - r.s0.tokens_after / Math.max(r.s0.tokens_before, 1)) * 100).toFixed(0)}%)`} tone="good" />
+                : <Stat label="Input tokens" value={fmtInt(r.s4.primary.count)} sub={r.s4.primary.exact ? 'exact' : `${r.s4.primary.tokenizer} ±20%`} />}
               <Stat label="Padding + repeats" value={fmtInt(r.s4.removable_tokens)} sub={`${((r.s4.removable_tokens / Math.max(r.s4.primary.count, 1)) * 100).toFixed(0)}% of the prompt`} tone={r.s4.removable_tokens ? 'bad' : 'good'} />
               <Stat label="Quality" value={`${r.s4.quality.overall}/100`} sub={`${r.s4.warnings.length} warnings`} tone={r.s4.quality.overall >= 75 ? 'good' : 'default'} />
               <Stat label="Task" value={r.s3.task_type.type} sub={`${r.s3.difficulty.level} difficulty · ${r.s3.risk.level} risk`} />
@@ -137,7 +144,20 @@ export default function App() {
               <Stat label="Cost / month" value={fmtUsd(r.s4.cost.per_month, 0)} sub={`${fmtUsd(r.s4.cost.per_call)} per call`} />
             </div>
 
-            <nav className={`grid grid-cols-1 gap-2 ${stages.length > 5 ? 'sm:grid-cols-3 xl:grid-cols-6' : 'sm:grid-cols-5'}`}>
+            <div className="grid gap-3 md:grid-cols-2">
+              {([['S6', 'Variant A · detailed / precise', r.s6.tokens, r.s6.cost.per_call, r.s6.checks.locks_preserved],
+                 ['S7', 'Variant B · short / token-optimal (CSV)', r.s7.csv_tokens, r.s7.cost.per_call, r.s7.checks.locks_preserved]] as const).map(([id, name, tokens, perCall, ok]) => (
+                <button key={id} onClick={() => setTab(id)}
+                  className="flex flex-wrap items-center gap-x-3 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-left text-sm text-indigo-900 hover:border-indigo-300">
+                  <span className="font-semibold">{name}</span>
+                  <span className="font-mono text-indigo-700">{fmtInt(tokens)} tok vs {fmtInt(r.s6.baseline.tokens)} · {fmtUsd(perCall)}/call</span>
+                  <span className={`text-xs ${ok ? 'text-emerald-700' : 'text-rose-700'}`}>{ok ? 'locks kept' : 'locks lost'}</span>
+                  <span className="ml-auto text-xs font-medium text-indigo-700">See {id} →</span>
+                </button>
+              ))}
+            </div>
+
+            <nav className={`grid grid-cols-2 gap-2 ${stages.length > 7 ? 'sm:grid-cols-4 xl:grid-cols-8' : 'sm:grid-cols-4 xl:grid-cols-7'}`}>
               {stages.map(s => (
                 <button key={s.id} onClick={() => setTab(s.id)}
                   className={`relative rounded-xl border px-3 py-2.5 text-left transition ${tab === s.id ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
@@ -159,6 +179,8 @@ export default function App() {
             {tab === 'S3' && <S3Panel s3={r.s3} />}
             {tab === 'S4' && <S4Panel s4={r.s4} text={r.s1.clean_text} />}
             {tab === 'S5' && <S5Panel s5={r.s5} text={r.s1.clean_text} />}
+            {tab === 'S6' && <S6Panel r={r} />}
+            {tab === 'S7' && <S7Panel r={r} />}
           </>
         )}
 
