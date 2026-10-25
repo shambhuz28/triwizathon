@@ -11,6 +11,7 @@ SPACY_MODEL = "en_core_web_sm"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LM_MODEL = "openai-community/gpt2"
 LLMLINGUA_MODEL = "microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank"
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
 def _load_once(fn):
@@ -79,6 +80,19 @@ def llmlingua():
 
 
 @_load_once
+def reranker():
+    """Cross-encoder that reads a query and a passage together (S0 reranking), or None when the
+    model is unavailable; S0 then ranks by the dense + keyword score alone."""
+    try:
+        from sentence_transformers import CrossEncoder
+
+        return CrossEncoder(RERANK_MODEL, device="cpu")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("reranker unavailable (%s); S0 ranks without it", exc)
+        return None
+
+
+@_load_once
 def keybert():
     from keybert import KeyBERT
 
@@ -127,6 +141,7 @@ def warmup() -> None:
     lm()
     keybert()
     llmlingua()
+    reranker()
     presidio().analyze(text="warm up", language="en")
     tiktoken_encoding("o200k_base")
     tiktoken_encoding("cl100k_base")

@@ -18,6 +18,19 @@ s0:                              # retrieval from uploaded documents, runs befor
   relative_drop: 0.15            # chunks further than this below the best score are left out
   min_query_score: 0.22          # ...except a sub-question's own best chunk, if it reaches this
   max_context_tokens: 1500       # o200k tokens of document text prepended to the prompt
+  keyword_weight: 0.3            # hybrid score = (1 - w) × dense cosine + w × BM25 (scaled to the best keyword match)
+  bm25: {k1: 1.5, b: 0.75}
+  rerank_k: 20                   # best hybrid candidates the cross-encoder reads again
+  rerank_min: 0.05               # cross-encoder relevance (0..1) a chunk needs to be passed on...
+  rerank_relative: 0.25          # ...and at least this share of the best chunk's relevance
+  duplicate_similarity: 0.95     # a chunk this close to one already picked adds nothing and is skipped
+
+live:                            # real runs on Gemini and Ollama (the "chat models" set-up), measured token usage
+  gemini_model: gemini-2.5-flash
+  gemini_key_file: ../../chat models/key.txt   # relative to backend/; GEMINI_API_KEY overrides it
+  ollama_url: http://localhost:11434
+  ollama_model: llama3.2         # falls back to the first model Ollama has installed
+  timeout_s: 300
 
 s1:
   pii:

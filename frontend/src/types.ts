@@ -6,7 +6,10 @@ export interface DocumentInfo {
   chunks: number; tokens: number; model: string; created: string
 }
 export interface UploadResponse { documents: DocumentInfo[]; errors: { filename: string; error: string }[] }
-export interface ChunkScore { doc_id: string; filename: string; chunk: number; location: string | null; score: number; preview: string; selected: boolean }
+export interface ChunkScore {
+  doc_id: string; filename: string; chunk: number; location: string | null; score: number; preview: string; selected: boolean
+  keyword: number; hybrid: number; rerank: number | null; note: string | null
+}
 export interface RetrievedPassage { doc_id: string; filename: string; location: string | null; chunks: number[]; score: number; text: string; tokens: number }
 export interface S0Result {
   mode: RagMode; used: boolean; reason: string; explicit_reference: string | null
@@ -14,6 +17,7 @@ export interface S0Result {
   best_score: number; threshold: number; candidates: ChunkScore[]; passages: RetrievedPassage[]
   context: string; context_tokens: number; model: string; index: string
   prompt_tokens: number; document_tokens: number; tokens_before: number; tokens_after: number
+  ranking: string; reranker: string | null; duplicates_skipped: number
 }
 
 export type Label = 'role' | 'task' | 'context' | 'data' | 'examples' | 'rules' | 'format' | 'question' | 'padding'
@@ -116,7 +120,9 @@ export interface LadderStep {
   reason: string; tokens: number; prompt: string
 }
 export interface S7Result {
-  prompt: string; csv: string; tokens: number; csv_tokens: number; steps: LadderStep[]; reached: string
+  prompt: string; csv: string; tokens: number; csv_tokens: number
+  format: 'plain' | 'csv'; format_reason: string; best_tokens: number
+  steps: LadderStep[]; reached: string
   max_ladder_level: 'L2' | 'L5'; answer_tokens_est: number; answer_basis: string; answer_budget: number; max_tokens: number
   baseline: Baseline; cost: CostPreview; checks: VariantCheck; trace: RequirementTrace[]
 }
@@ -124,7 +130,44 @@ export interface S7Result {
 export interface AnalyzeResponse {
   s0: S0Result | null
   s1: S1Result; s2: S2Result; s3: S3Result; s4: S4Result; s5: S5Result; s6: S6Result; s7: S7Result
+  recommendation: Recommendation
   timings: { stage: string; name: string; ms: number }[]; total_ms: number
 }
 
 export interface ModelInfo { id: string; label: string; input: number; output: number; note?: string }
+
+export type PromptKey = 'original' | 'A' | 'B'
+export interface PromptOption {
+  key: PromptKey; name: string; input_tokens: number; answer_tokens: number; per_call: number; per_month: number
+  checks_passed: boolean; precision: string; best_for: string; pros: string[]; cons: string[]
+}
+export interface Recommendation {
+  severity: 'low' | 'medium' | 'high'; severity_score: number; severity_max: number; factors: string[]
+  choice: PromptKey; fallback: PromptKey | null; reason: string; options: PromptOption[]; tips: string[]; note: string
+}
+
+export type MarketText = 'original' | 'retrieved' | 'variant_a' | 'variant_b' | 'variant_b_csv'
+
+export type LiveProvider = 'gemini' | 'ollama'
+export interface LiveStatus { gemini: { available: boolean; model: string | null; why: string | null }; ollama: { available: boolean; model: string | null; why: string | null } }
+export interface LiveResult {
+  provider: LiveProvider; model: string; reply: string; input_tokens: number; output_tokens: number
+  thinking_tokens: number; total_tokens: number; seconds: number
+  fallback_from: string[]            // Gemini models skipped because their quota was used up
+}
+export interface ReplyComparison {
+  words: number; tokens: number; similarity: number | null
+  labels_found: string[]; labels_missing: string[]; format_ok: Record<string, boolean>
+  preamble: boolean; over_budget: boolean
+}
+export interface CompareResponse { reference: string; replies: Record<string, ReplyComparison> }
+export interface MarketModel {
+  id: string; name: string; vendor: string; family: string; context: number | null
+  input: number; output: number                      // USD per million tokens, live from the catalogue
+  tokens: Partial<Record<MarketText, number>> | null; cost: Partial<Record<MarketText, number>> | null
+  counter: string | null; unavailable: string | null
+}
+export interface MarketResponse {
+  source: string; fetched_at: string; texts: MarketText[]; answers: Record<string, number>
+  reference: Record<string, number>; models: MarketModel[]; counted: number; total: number
+}

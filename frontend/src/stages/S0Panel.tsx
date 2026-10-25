@@ -80,21 +80,32 @@ export default function S0Panel({ s0 }: { s0: S0Result }) {
       </div>
 
       {s0.candidates.length > 0 && (
-        <Card className="lg:col-span-3" title="Nearest chunks" subtitle="FAISS inner product on unit-normalised MiniLM embeddings (= cosine)">
+        <Card className="lg:col-span-3" title="Candidate chunks"
+          subtitle={<>{s0.ranking || 'FAISS cosine on MiniLM embeddings'}{s0.reranker && <> · {s0.reranker.split('/').pop()}</>}{s0.duplicates_skipped > 0 && <> · {s0.duplicates_skipped} near-duplicate chunk(s) skipped</>}</>}>
+          <div className="mb-2 flex flex-wrap gap-4 text-[11px] text-slate-600">
+            <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-slate-400" />Dense (cosine)</span>
+            <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-indigo-300" />Keyword (BM25)</span>
+            <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-indigo-600" />Reranker relevance</span>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="text-slate-500">
-                <tr><th className="w-40 py-1.5 pr-3 font-medium">Score</th><th className="py-1.5 pr-3 font-medium">Where</th><th className="py-1.5 pr-3 font-medium">Text</th><th className="py-1.5 font-medium" /></tr>
+                <tr><th className="w-48 py-1.5 pr-3 font-medium">Scores</th><th className="py-1.5 pr-3 font-medium">Where</th><th className="py-1.5 pr-3 font-medium">Text</th><th className="py-1.5 font-medium" /></tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {s0.candidates.map(c => (
                   <tr key={`${c.doc_id}-${c.chunk}`} className={c.selected ? '' : 'text-slate-400'}>
-                    <td className="py-1.5 pr-3">
-                      <div className="flex items-center gap-2"><Bar value={Math.max(0, c.score)} className={c.selected ? 'bg-indigo-500' : 'bg-slate-300'} /><span className="w-9 text-right font-mono">{c.score.toFixed(2)}</span></div>
+                    <td className="space-y-[3px] py-1.5 pr-3">
+                      {([['dense', c.score, 'bg-slate-400'], ['keyword', c.keyword, 'bg-indigo-300'], ...(c.rerank != null ? [['rerank', c.rerank, 'bg-indigo-600']] : [])] as [string, number, string][]).map(([k, v, fill]) => (
+                        <div key={k} className="flex items-center gap-2" title={`${k} ${v.toFixed(3)}`}>
+                          <Bar value={Math.max(0, v)} className={fill} /><span className="w-9 text-right font-mono text-[10px]">{v.toFixed(2)}</span>
+                        </div>
+                      ))}
                     </td>
                     <td className="whitespace-nowrap py-1.5 pr-3">{c.filename}{c.location && <span className="text-slate-400"> · {c.location}</span>}</td>
                     <td className="py-1.5 pr-3">{c.preview}</td>
-                    <td className="py-1.5">{c.selected && <Pill className="bg-indigo-100 text-indigo-700">used</Pill>}</td>
+                    <td className="py-1.5">{c.selected ? <Pill className="bg-indigo-100 text-indigo-700">used</Pill>
+                      : c.note && <span className="text-[10px] text-amber-700">{c.note}</span>}</td>
                   </tr>
                 ))}
               </tbody>

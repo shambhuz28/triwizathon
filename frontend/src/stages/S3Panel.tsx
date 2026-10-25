@@ -1,5 +1,6 @@
 import type { S3Result } from '../types'
 import { Bar, Card, Level, Pill } from '../ui'
+import { Radar } from './charts'
 
 const TASK_NAMES: Record<string, string> = {
   code: 'Write code', debug: 'Debug', summarise: 'Summarise', extract: 'Extract', classify: 'Classify',
@@ -15,6 +16,11 @@ export default function S3Panel({ s3 }: { s3: S3Result }) {
       <Card title="Task type" subtitle="Keyword evidence (spaCy lemmas) + embedding similarity">
         <div className="text-2xl font-semibold">{TASK_NAMES[s3.task_type.type] ?? s3.task_type.type}</div>
         <div className="text-sm text-slate-500">{(s3.task_type.confidence * 100).toFixed(0)}% confidence · {s3.items} input item{s3.items === 1 ? '' : 's'}</div>
+        <div className="mt-3">
+          <Radar highlight={s3.task_type.type}
+            axes={Object.keys(TASK_NAMES).filter(t => t in s3.task_type.scores)
+              .map(t => ({ key: t, label: TASK_NAMES[t], value: s3.task_type.scores[t] }))} />
+        </div>
         <div className="mt-4 space-y-1.5">
           {scores.slice(0, 6).map(([t, v]) => (
             <div key={t} className="flex items-center gap-2 text-xs">

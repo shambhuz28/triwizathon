@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AnalyzeResponse, DocumentInfo, ModelInfo, RagMode } from './types'
+import type { AnalyzeResponse, DocumentInfo, MarketResponse, ModelInfo, RagMode } from './types'
 import { SAMPLES } from './samples'
 import { Stat, fmtInt, fmtUsd } from './ui'
 import Documents from './Documents'
@@ -11,6 +11,7 @@ import S4Panel from './stages/S4Panel'
 import S5Panel from './stages/S5Panel'
 import S6Panel from './stages/S6Panel'
 import S7Panel from './stages/S7Panel'
+import ComparePanel from './stages/ComparePanel'
 
 const STAGES = [
   { id: 'S0', name: 'Retrieve', blurb: 'Relevant passages from attached files (FAISS)' },
@@ -20,7 +21,8 @@ const STAGES = [
   { id: 'S4', name: 'Count and profile', blurb: 'Tokens, surprisal heat map, quality, warnings' },
   { id: 'S5', name: 'Lock and compress', blurb: 'Lock key words, LLMLingua-2 removes the rest of the waste' },
   { id: 'S6', name: 'Variant A', blurb: 'Detailed: sections, exact format, constraints, self-check' },
-  { id: 'S7', name: 'Variant B', blurb: 'Short: reduction ladder, answer cap, CSV output' },
+  { id: 'S7', name: 'Variant B', blurb: 'Short: reduction ladder, answer cap, plain text or CSV' },
+  { id: 'S10', name: 'Compare', blurb: 'Recommendation, every model, live Gemini + Ollama run' },
 ] as const
 type StageId = typeof STAGES[number]['id']
 
@@ -36,6 +38,34 @@ export default function App() {
   const [tab, setTab] = useState<StageId>('S2')
   const [docs, setDocs] = useState<DocumentInfo[]>([])
   const [ragMode, setRagMode] = useState<RagMode>('auto')
+  const [market, setMarket] = useState<MarketResponse | null>(null)
+  const [marketLoading, setMarketLoading] = useState(false)
+  const [marketError, setMarketError] = useState<string | null>(null)
+  const [analyzed, setAnalyzed] = useState<{ prompt: string; docIds: string[] } | null>(null)
+
+  // Counts on every model take a while (live catalogue, vendor counters), so they load after the analysis.
+  async function loadMarket(res: AnalyzeResponse, docIds: string[], userPrompt: string) {
+    setMarket(null)
+    setMarketError(null)
+    setMarketLoading(true)
+    try {
+      const m = await fetch('/api/v1/market-tokens', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: userPrompt, document_ids: res.s0?.used ? docIds : [], retrieved: res.s0?.used ? res.s1.clean_text : null,
+          variant_a: res.s6.prompt, variant_b: res.s7.prompt, variant_b_csv: res.s7.csv,
+          answers: { original: res.s4.cost.output_tokens_est, retrieved: res.s4.cost.output_tokens_est,
+            variant_a: res.s6.answer_tokens_est, variant_b: res.s7.answer_tokens_est, variant_b_csv: res.s7.answer_tokens_est },
+        }),
+      })
+      if (!m.ok) throw new Error(`${m.status} ${await m.text()}`)
+      setMarket(await m.json())
+    } catch (e) {
+      setMarketError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setMarketLoading(false)
+    }
+  }
 
   useEffect(() => {
     fetch('/api/v1/models').then(r => r.json()).then(d => { setModels(d.models); setModel(d.default) }).catch(() => {})
@@ -57,6 +87,8 @@ export default function App() {
       const res: AnalyzeResponse = await r.json()
       setResult(res)
       if (!res.s0 && tab === 'S0') setTab('S2')
+      setAnalyzed({ prompt, docIds: docs.map(d => d.id) })
+      void loadMarket(res, docs.map(d => d.id), prompt)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -65,11 +97,13 @@ export default function App() {
   }
 
   const r = result
-  const stages = r?.s0 ? STAGES : STAGES.filter(s => s.id !== 'S0')
+  const marketState = { data: market, loading: marketLoading, error: marketError,
+    retry: () => { if (r && analyzed) void loadMarket(r, analyzed.docIds, analyzed.prompt) } }
+  const stages =r?.s0 ? STAGES : STAGES.filter(s => s.id !== 'S0')
   const timing = (id: string) => r?.timings.find(t => t.stage === id)?.ms
   const warnCount = (id: StageId) => {
     if (!r) return 0
-    return { S0: r.s0?.missing.length ?? 0, S1: r.s1.injections.length + (r.s1.pii_redacted ? 0 : r.s1.pii.length), S2: r.s2.duplicates.length, S3: r.s3.gaps.length, S4: r.s4.warnings.length, S5: r.s5.compression.missing_locks.length, S6: r.s6.checks.missing_locks.length + r.s6.checks.requirements_missing.length, S7: r.s7.checks.missing_locks.length + r.s7.checks.requirements_missing.length }[id]
+    return { S0: r.s0?.missing.length ?? 0, S1: r.s1.injections.length + (r.s1.pii_redacted ? 0 : r.s1.pii.length), S2: r.s2.duplicates.length, S3: r.s3.gaps.length, S4: r.s4.warnings.length, S5: r.s5.compression.missing_locks.length, S6: r.s6.checks.missing_locks.length + r.s6.checks.requirements_missing.length, S7: r.s7.checks.missing_locks.length + r.s7.checks.requirements_missing.length, S10: 0 }[id]
   }
 
   return (
@@ -79,7 +113,7 @@ export default function App() {
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">OP</div>
           <div>
             <h1 className="text-lg font-semibold leading-tight text-slate-900">OptimusPrompt</h1>
-            <p className="text-xs text-slate-500">Analysis pipeline · stages S0–S7 · all local models, no API cost</p>
+            <p className="text-xs text-slate-500">Analysis pipeline · stages S0–S10 · local models; live runs only when you ask</p>
           </div>
         </div>
       </header>
@@ -145,19 +179,29 @@ export default function App() {
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
-              {([['S6', 'Variant A · detailed / precise', r.s6.tokens, r.s6.cost.per_call, r.s6.checks.locks_preserved],
-                 ['S7', 'Variant B · short / token-optimal (CSV)', r.s7.csv_tokens, r.s7.cost.per_call, r.s7.checks.locks_preserved]] as const).map(([id, name, tokens, perCall, ok]) => (
+              {([['S6', 'A', 'Variant A · detailed / precise', r.s6.tokens, r.s6.cost.per_call, r.s6.checks.locks_preserved],
+                 ['S7', 'B', `Variant B · short (${r.s7.format === 'plain' ? 'plain text' : 'CSV'})`, r.s7.best_tokens, r.s7.cost.per_call, r.s7.checks.locks_preserved]] as const).map(([id, key, name, tokens, perCall, ok]) => (
                 <button key={id} onClick={() => setTab(id)}
-                  className="flex flex-wrap items-center gap-x-3 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-left text-sm text-indigo-900 hover:border-indigo-300">
+                  className={`flex flex-wrap items-center gap-x-3 rounded-lg border px-4 py-2 text-left text-sm text-indigo-900 hover:border-indigo-400 ${r.recommendation.choice === key ? 'border-indigo-500 bg-indigo-100 ring-1 ring-indigo-500' : 'border-indigo-200 bg-indigo-50'}`}>
                   <span className="font-semibold">{name}</span>
+                  {r.recommendation.choice === key && <span className="rounded-full bg-indigo-600 px-2 py-0.5 text-[10px] font-semibold text-white">recommended</span>}
+                  {r.recommendation.fallback === key && <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold text-indigo-700">fallback</span>}
                   <span className="font-mono text-indigo-700">{fmtInt(tokens)} tok vs {fmtInt(r.s6.baseline.tokens)} · {fmtUsd(perCall)}/call</span>
                   <span className={`text-xs ${ok ? 'text-emerald-700' : 'text-rose-700'}`}>{ok ? 'locks kept' : 'locks lost'}</span>
                   <span className="ml-auto text-xs font-medium text-indigo-700">See {id} →</span>
                 </button>
               ))}
             </div>
+            {r.recommendation.choice === 'original' && (
+              <p className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700">
+                <b>Recommended: send the original prompt.</b> {r.recommendation.reason}
+              </p>
+            )}
+            <button onClick={() => setTab('S10')} className="-mt-1 text-left text-xs text-slate-500 hover:text-indigo-700">
+              {r.recommendation.reason} · <span className="font-medium text-indigo-700">trade-offs, every model and a live Gemini + Ollama run →</span>
+            </button>
 
-            <nav className={`grid grid-cols-2 gap-2 ${stages.length > 7 ? 'sm:grid-cols-4 xl:grid-cols-8' : 'sm:grid-cols-4 xl:grid-cols-7'}`}>
+            <nav className={`grid grid-cols-2 gap-2 ${stages.length > 8 ? 'sm:grid-cols-5 xl:grid-cols-9' : 'sm:grid-cols-4 xl:grid-cols-8'}`}>
               {stages.map(s => (
                 <button key={s.id} onClick={() => setTab(s.id)}
                   className={`relative rounded-xl border px-3 py-2.5 text-left transition ${tab === s.id ? 'border-indigo-500 bg-indigo-50 ring-1 ring-indigo-500' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
@@ -181,6 +225,7 @@ export default function App() {
             {tab === 'S5' && <S5Panel s5={r.s5} text={r.s1.clean_text} />}
             {tab === 'S6' && <S6Panel r={r} />}
             {tab === 'S7' && <S7Panel r={r} />}
+            {tab === 'S10' && <ComparePanel r={r} market={marketState} analyzed={analyzed} />}
           </>
         )}
 

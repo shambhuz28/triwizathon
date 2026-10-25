@@ -20,7 +20,7 @@ import sys
 import time
 
 from .schemas import AnalyzeRequest, AnalyzeResponse, StageTiming
-from .stages import s0_retrieve, s1_clean, s2_parse, s3_task, s4_profile, s5_lock, s6_variant_a, s7_variant_b
+from .stages import s0_retrieve, s1_clean, s2_parse, s3_task, s4_profile, s5_lock, s6_variant_a, s7_variant_b, s10_recommend
 
 STAGES = {
     "S0": "Retrieve from documents",
@@ -31,6 +31,7 @@ STAGES = {
     "S5": "Lock and compress",
     "S6": "Variant A (detailed)",
     "S7": "Variant B (short, CSV)",
+    "S10": "Compare and recommend",
 }
 
 
@@ -56,8 +57,9 @@ async def analyze(req: AnalyzeRequest) -> AnalyzeResponse:
     s5 = await _timed("S5", timings, s5_lock.run, s1, s2, s3, s4)
     s6 = await _timed("S6", timings, s6_variant_a.run, s1, s2, s3, s4, s5, s0)
     s7 = await _timed("S7", timings, s7_variant_b.run, s2, s3, s4, s5, s0, s1.clean_text)
+    rec = await _timed("S10", timings, s10_recommend.run, s0, s3, s4, s6, s7)
 
-    return AnalyzeResponse(s0=s0, s1=s1, s2=s2, s3=s3, s4=s4, s5=s5, s6=s6, s7=s7, timings=timings,
+    return AnalyzeResponse(s0=s0, s1=s1, s2=s2, s3=s3, s4=s4, s5=s5, s6=s6, s7=s7, recommendation=rec, timings=timings,
                            total_ms=round((time.perf_counter() - t0) * 1000, 1))
 
 
@@ -105,6 +107,9 @@ def _summary(r: AnalyzeResponse) -> str:
                f"  locks kept={b.checks.locks_preserved}  ${b.cost.per_call:.6f}/call")
     out += [f"    {s.level} {s.status:<9} {s.tokens:>5}  {s.reason}" for s in b.steps]
     out.append("    " + b.csv.replace("\n", "\n    "))
+    rec = r.recommendation
+    out.append(f"S10 severity={rec.severity} ({rec.severity_score}/{rec.severity_max})  choice={rec.choice}"
+               f"  fallback={rec.fallback}  {rec.reason}")
     out.append("time " + "  ".join(f"{t.stage}={t.ms:.0f}ms" for t in r.timings) + f"  total={r.total_ms:.0f}ms")
     return "\n".join(out)
 

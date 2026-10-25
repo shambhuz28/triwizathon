@@ -4,16 +4,25 @@ Analysis pipeline stages **S0–S7** from the PRD (`worst case .pdf`) plus a web
 
 | Stage | File | What it does | Libraries |
 |---|---|---|---|
-| S0 Retrieve from documents | `backend/optimus/stages/s0_retrieve.py`, `backend/optimus/documents.py` | when files are attached and the prompt is about them, pull the relevant passages and put them in front of the prompt | pypdf, python-docx, python-pptx, openpyxl, MiniLM embeddings, FAISS |
+| S0 Retrieve from documents | `backend/optimus/stages/s0_retrieve.py`, `backend/optimus/documents.py` | when files are attached and the prompt is about them, pull the relevant passages and put them in front of the prompt: filler-free queries, hybrid dense + BM25 ranking, cross-encoder rerank, near-duplicate chunks skipped | pypdf, python-docx, python-pptx, openpyxl, MiniLM embeddings, FAISS, ms-marco cross-encoder |
 | S1 Clean up | `backend/optimus/stages/s1_clean.py` | normalise text, detect language, find/redact personal info, flag embedded instructions | ftfy, regex, langdetect, Presidio + spaCy, MiniLM embeddings |
 | S2 Break into parts | `backend/optimus/stages/s2_parse.py` | pull out code/JSON/tables, split sentences, label 9 kinds of content, link repeats | pysbd, spaCy, MiniLM, RapidFuzz |
 | S3 Understand the task | `backend/optimus/stages/s3_task.py` | task type (from S2's task/question parts), difficulty, risk, gaps linked to S2 parts, answer-length budget | spaCy, MiniLM, tiktoken |
 | S4 Count and profile | `backend/optimus/stages/s4_profile.py` | token counts, cost preview, surprisal/entropy heat map, surprising words, low-info phrases (incl. S2 padding/repeats), informativeness per S2 part, quality score, warnings | tiktoken, GPT-2 small, wordfreq, YAKE, KeyBERT |
 | S5 Lock and compress | `backend/optimus/stages/s5_lock.py` | locks numbers, names, identifiers, restrictions, label sets, code, quotes, placeholders; removes unnecessary words; hands off to S6/S7 | regex, spaCy NER + dependency parse, LLMLingua-2 |
 | S6 Variant A (detailed) | `backend/optimus/stages/s6_variant_a.py` | up to ten sections (role, goal, rules, assumptions, examples, plan, format, self-check, fenced inputs, reminder); implied constraints added, gaps marked as assumptions, every lock kept, ≤ 2.5× the original | rule-based, tiktoken |
-| S7 Variant B (short, CSV) | `backend/optimus/stages/s7_variant_b.py` | reduction ladder L0–L5 with a lock/requirement check after each step (high-risk stops at L2), answer cap, delivered as `field,value` CSV | rule-based, tiktoken |
+| S7 Variant B (short) | `backend/optimus/stages/s7_variant_b.py` | reduction ladder L0–L5 with a lock/requirement check after each step (high-risk stops at L2), answer cap; built as plain text and as `field,value` CSV, and sent in whichever takes fewer tokens (`format`) | rule-based, tiktoken |
+| S10 Compare and recommend | `backend/optimus/stages/s10_recommend.py` | picks the original, Variant A or Variant B from S3's severity (risk ×2 + difficulty) and each variant's checks; trade-offs generated from the numbers | rule-based |
+| Live run | `backend/optimus/live.py`, `GET /api/v1/live/status`, `POST /api/v1/live/run` | sends the original, Variant A and Variant B (plain and CSV) to Gemini and the local Ollama model, as the `chat models` script does, and reports the tokens they really used (input, output, thinking, seconds) | Gemini `generateContent`, Ollama `/api/chat` |
+| Tokens on every model | `backend/optimus/market.py`, `POST /api/v1/market-tokens` | live model list and prices (OpenRouter catalogue); each model counted by its vendor's own tokenizer or count-tokens API, never estimated | tiktoken, Hugging Face `tokenizers`, vendor APIs |
 
-`backend/optimus/pipeline.py` is the driver: S0 → S1 → S2 → S3 → S4 → S5 → S6 → S7 (S0 only when files are attached).
+`backend/optimus/pipeline.py` is the driver: S0 → S1 → S2 → S3 → S4 → S5 → S6 → S7 → S10 (S0 only when files are attached).
+For the per-model counts, set any of `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `XAI_API_KEY`, `CO_API_KEY` (and `HF_TOKEN` for gated
+Hugging Face repos) on the backend; models whose counter is unreachable show why instead of a number.
+The Gemini key is read from `GEMINI_API_KEY`, else from `live.gemini_key_file` in `thresholds.yaml` (default: the
+`chat models/key.txt` next to this folder). On Gemini's free tier, gemini-2.5-flash allows 20 `generateContent`
+requests a day, and each live run uses 4–5 of them.
+Set `OPTIMUS_API=http://127.0.0.1:<port>` when starting Vite to point the dev proxy at a backend on another port.
 For a question about attached files, S0 reports `tokens_before` (whole files + prompt) and `tokens_after` (retrieved passages + prompt); S6/S7 compare against `tokens_before`. Each stage reads the outputs of the ones
 before it and exposes one `run(...)`, so a step can be changed on its own. Prices and thresholds live in
 `backend/optimus/config/*.yaml`.

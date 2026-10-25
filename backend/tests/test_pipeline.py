@@ -195,3 +195,104 @@ def test_variant_b_climbs_the_ladder_and_ships_csv(worked, messy):
     m = messy.s7                                                   # high risk: stops at L2, no answer cap
     assert m.max_ladder_level == "L2" and m.reached in ("L0", "L1", "L2")
     assert {s.level: s.status for s in m.steps}["L3"] == "skipped" and m.checks.locks_preserved
+
+
+def test_recommendation_follows_severity(worked, messy):
+    low, high = worked.recommendation, messy.recommendation
+    assert low.severity == "low" and low.choice == "B" and low.fallback == "A"
+    assert high.severity == "high" and high.choice == "A"                 # financial + code: precision first
+    for rec in (low, high):
+        assert [o.key for o in rec.options] == ["original", "A", "B"]
+        assert all(o.pros and o.cons for o in rec.options)              # every choice states its trade-off
+    b = next(o for o in low.options if o.key == "B")
+    assert b.per_month < next(o for o in low.options if o.key == "original").per_month
+
+
+def test_variant_b_is_sent_in_the_shorter_form(worked, messy):
+    for r in (worked, messy):
+        b = r.s7
+        assert b.best_tokens == min(b.tokens, b.csv_tokens)
+        assert b.format == ("plain" if b.tokens < b.csv_tokens else "csv") and b.format_reason
+        opt = next(o for o in r.recommendation.options if o.key == "B")
+        assert opt.input_tokens == b.best_tokens and ("plain text" if b.format == "plain" else "CSV") in opt.name
+
+
+def test_live_runs_report_the_providers_own_usage(monkeypatch):
+    from optimus import live
+    monkeypatch.setattr(live, "gemini_key", lambda: "test-key")
+    monkeypatch.setattr(live, "ollama_model", lambda: "llama3.2:latest")
+    monkeypatch.setattr(live, "_gemini_chat_models", lambda: ("gemini-2.5-flash",))
+    monkeypatch.setattr(live, "_exhausted", {})
+    replies = {
+        "generateContent": {"candidates": [{"content": {"parts": [{"text": "Negative"}]}}],
+                            "usageMetadata": {"promptTokenCount": 21, "candidatesTokenCount": 1,
+                                              "thoughtsTokenCount": 172, "totalTokenCount": 194}},
+        "/api/chat": {"message": {"content": "Negative"}, "prompt_eval_count": 45, "eval_count": 3},
+    }
+    sent = []
+
+    def fake_post(url, body, headers=None, timeout=None):
+        sent.append((url, headers or {}))
+        return next(v for k, v in replies.items() if k in url)
+    monkeypatch.setattr(live, "_post", fake_post)
+    g, o = live.run("gemini", "Classify."), live.run("ollama", "Classify.")
+    assert (g["input_tokens"], g["output_tokens"], g["thinking_tokens"], g["total_tokens"]) == (21, 1, 172, 194)
+    assert (o["input_tokens"], o["output_tokens"], o["total_tokens"]) == (45, 3, 48) and o["reply"] == "Negative"
+    assert "test-key" not in sent[0][0] and sent[0][1]["x-goog-api-key"] == "test-key"   # key in a header, not the URL
+
+
+def test_gemini_moves_to_the_next_model_when_quota_runs_out(monkeypatch):
+    import io
+    import json
+    import urllib.error
+    from optimus import live
+    monkeypatch.setattr(live, "gemini_key", lambda: "test-key")
+    monkeypatch.setattr(live, "_gemini_chat_models", lambda: ("gemini-2.5-flash", "gemini-old-lite", "gemini-3.8-flash"))
+    monkeypatch.setattr(live, "_exhausted", {})
+    quota = {"error": {"details": [{"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]},
+                                   {"retryDelay": "269s"}]}}
+    calls = []
+
+    def fake_post(url, body, headers=None, timeout=None):
+        calls.append(url)
+        if "gemini-2.5-flash" in url:
+            raise urllib.error.HTTPError(url, 429, "quota", {}, io.BytesIO(json.dumps(quota).encode()))
+        if "gemini-old-lite" in url:
+            raise urllib.error.HTTPError(url, 404, "gone", {}, io.BytesIO(b"{}"))
+        return {"candidates": [{"content": {"parts": [{"text": "ok"}]}}], "usageMetadata": {"promptTokenCount": 3}}
+    monkeypatch.setattr(live, "_post", fake_post)
+    r = live.run("gemini", "hi")
+    assert r["model"] == "gemini-3.8-flash" and r["fallback_from"] == ["gemini-2.5-flash", "gemini-old-lite"]
+    calls.clear()
+    assert live.run("gemini", "hi", model=r["model"])["model"] == "gemini-3.8-flash"   # pinned, no retry of the 429'd one
+    assert len(calls) == 1
+
+
+def test_replies_are_compared_with_the_original():
+    from optimus import live
+    out = live.compare({"original": "Sure! Here is the table:\n| # | Label |\n|---|---|\n| 1 | negative |",
+                        "B_plain": "| # | Label |\n|---|---|\n| 1 | negative |"},
+                       "original", ["positive", "negative", "neutral"], ["table"], budget=114)["replies"]
+    assert out["original"]["preamble"] and not out["B_plain"]["preamble"]
+    assert out["B_plain"]["format_ok"]["table"] and out["B_plain"]["similarity"] > 0.8
+    assert out["B_plain"]["labels_found"] == ["negative"] and not out["B_plain"]["over_budget"]
+
+
+def test_market_routes_each_model_to_its_official_counter(monkeypatch):
+    from optimus import market
+    models = [
+        {"id": "openai/gpt-4o", "vendor": "openai", "family": "GPT", "hf": None},
+        {"id": "anthropic/claude-x", "vendor": "anthropic", "family": "Claude", "hf": None},
+        {"id": "qwen/qwen-new", "vendor": "qwen", "family": "Qwen3", "hf": "Qwen/Qwen-New"},
+        {"id": "qwen/qwen-old", "vendor": "qwen", "family": "Qwen3", "hf": "Qwen/Qwen-Old"},
+        {"id": "acme/closed", "vendor": "acme", "family": "Other", "hf": None},
+    ]
+    plan = market._plan(models)
+    assert plan["openai/gpt-4o"][0] == "api:openai/gpt-4o"
+    assert plan["qwen/qwen-old"][0] == "hf:Qwen/Qwen-New"                 # one family, one tokenizer download
+    assert plan["acme/closed"] == ("none", None)
+    fn, how = plan["openai/gpt-4o"][1]()
+    assert fn("Classify each review.") > 0 and "tiktoken" in how
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    with pytest.raises(market.Unavailable):                             # no key: no number, never a guess
+        plan["anthropic/claude-x"][1]()

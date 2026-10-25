@@ -9,8 +9,9 @@ first failure the step is undone and the climb stops. High-risk tasks (S3) stop 
   L3  constrained rewrite: format sentences become "Output: …", wordy clauses get short forms
   L4  extractive long-context compressor — not in this build (PRD P1.1)
   L5  shape the answer: answer only, length budget from S3 (never below its floor)
-It stays in full sentences, never a keyword list. The result is written as `field,value` CSV
-rows (task, rules, format, the data, the answer limit), the compact form Variant B ships in.
+It stays in full sentences, never a keyword list. The result is also written as `field,value` CSV
+rows (task, rules, format, the data, the answer limit); Variant B is sent in whichever of the two
+forms takes fewer tokens (`format`), and its cost is for that form.
 """
 from __future__ import annotations
 
@@ -180,8 +181,19 @@ def run(s2: S2Result, s3: S3Result, s4: S4Result, s5: S5Result, s0: S0Result | N
     place_of = {p.id: _field(p, segs) + " row" for p, b in pieces if b}
     reqs, where = va.trace(s2, s5, place_of)
     checks = va.check(_csv_values(table), s2, s5, where)
-    return S7Result(prompt=prompt, csv=table, tokens=len(enc.encode(prompt)), csv_tokens=csv_tokens, steps=steps,
+    # Send whichever form costs fewer tokens: CSV saves on repeated structure, but its field names
+    # and doubled quotes cost tokens on prompts with quoted data or code.
+    plain_tokens = len(enc.encode(prompt))
+    fmt = "plain" if plain_tokens < csv_tokens else "csv"
+    best = min(plain_tokens, csv_tokens)
+    diff = abs(csv_tokens - plain_tokens)
+    reason = (f"Plain text is {diff} token{'s' if diff != 1 else ''} shorter than CSV ({plain_tokens} vs {csv_tokens}): "
+              "CSV's field names and quoting cost more than they save here" if fmt == "plain" else
+              f"CSV is {diff} token{'s' if diff != 1 else ''} shorter than plain text ({csv_tokens} vs {plain_tokens})"
+              if diff else f"Both forms take {best} tokens; CSV keeps the fields separable")
+    return S7Result(prompt=prompt, csv=table, tokens=plain_tokens, csv_tokens=csv_tokens, format=fmt, format_reason=reason,
+                    best_tokens=best, steps=steps,
                     reached=reached, max_ladder_level=h.max_ladder_level, answer_tokens_est=answer, answer_basis=basis,
                     answer_budget=budget, max_tokens=round(1.5 * budget),
                     baseline=va.baseline(s0, s4, s5, s3.answer_length.expected_tokens),
-                    cost=va.price(s4, csv_tokens, answer), checks=checks, trace=reqs)
+                    cost=va.price(s4, best, answer), checks=checks, trace=reqs)

@@ -41,6 +41,10 @@ class ChunkScore(BaseModel):
     score: float                  # best cosine to the whole prompt or one of its sentences
     preview: str
     selected: bool
+    keyword: float = 0.0          # BM25 against the prompt's words, 0..1 (1 = best keyword match)
+    hybrid: float = 0.0           # (1 - w) × score + w × keyword
+    rerank: float | None = None   # cross-encoder relevance 0..1, for the candidates it read
+    note: str | None = None       # why a candidate was left out
 
 
 class RetrievedPassage(BaseModel):
@@ -75,6 +79,9 @@ class S0Result(BaseModel):
     document_tokens: int = 0          # every attached file in full
     tokens_before: int = 0            # without retrieval: whole files + prompt
     tokens_after: int = 0             # with retrieval: retrieved passages + prompt
+    ranking: str = ""                 # how candidates were ordered (hybrid, reranker)
+    reranker: str | None = None       # cross-encoder used, None when unavailable
+    duplicates_skipped: int = 0
 
 
 # ── S1 · Clean up ────────────────────────────────────────────────────────────
@@ -475,9 +482,12 @@ class LadderStep(BaseModel):
 
 class S7Result(BaseModel):
     prompt: str                   # plain text
-    csv: str                      # the same prompt as field,value rows — the Variant B deliverable
+    csv: str                      # the same prompt as field,value rows
     tokens: int
     csv_tokens: int
+    format: Literal["plain", "csv"] = "csv"    # the form to send: whichever takes fewer tokens
+    format_reason: str = ""
+    best_tokens: int = 0                       # tokens of that form; `cost` is for it
     steps: list[LadderStep]
     reached: str                  # highest step kept
     max_ladder_level: Literal["L2", "L5"]
@@ -491,6 +501,34 @@ class S7Result(BaseModel):
     trace: list[RequirementTrace]
 
 
+# ── S10 · Compare and recommend ─────────────────────────────────────────────
+class PromptOption(BaseModel):
+    key: Literal["original", "A", "B"]
+    name: str
+    input_tokens: int
+    answer_tokens: int
+    per_call: float
+    per_month: float
+    checks_passed: bool
+    precision: str                # expected, from the prompt's structure: "highest", "as written", "lean"
+    best_for: str
+    pros: list[str]               # trade-offs, generated from the numbers
+    cons: list[str]
+
+
+class Recommendation(BaseModel):
+    severity: Literal["low", "medium", "high"]
+    severity_score: int           # 2 × risk + difficulty (0..6)
+    severity_max: int
+    factors: list[str]
+    choice: Literal["original", "A", "B"]
+    fallback: Literal["original", "A", "B"] | None
+    reason: str
+    options: list[PromptOption]
+    tips: list[str]
+    note: str
+
+
 # ── Pipeline ─────────────────────────────────────────────────────────────────
 class AnalyzeRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=100_000)
@@ -499,6 +537,31 @@ class AnalyzeRequest(BaseModel):
     monthly_volume: int = Field(default=1_000_000, ge=0)
     document_ids: list[str] = Field(default_factory=list, max_length=50)   # uploaded files S0 may draw on
     rag_mode: RagMode = "auto"        # auto: only when the prompt is about the files
+
+
+class MarketRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=100_000)     # the prompt as the user wrote it
+    document_ids: list[str] = Field(default_factory=list, max_length=50)
+    retrieved: str | None = None                              # the prompt after S0 (passages + prompt)
+    variant_a: str
+    variant_b: str                                            # plain text
+    variant_b_csv: str | None = None                          # the same prompt as CSV
+    answers: dict[str, int] = Field(default_factory=dict)     # expected answer tokens per text key
+
+
+class LiveRequest(BaseModel):
+    provider: Literal["gemini", "ollama"]
+    prompt: str = Field(min_length=1, max_length=200_000)
+    document_ids: list[str] = Field(default_factory=list, max_length=50)   # put these files in full in front
+    model: str | None = None          # Gemini: keep one run on the model its first prompt landed on
+
+
+class CompareRequest(BaseModel):
+    replies: dict[str, str]           # prompt key -> the model's reply
+    reference: str = "original"       # the reply the others are compared with
+    labels: list[str] = Field(default_factory=list)      # allowed labels the answer should use (S5 label sets)
+    formats: list[str] = Field(default_factory=list)     # answer formats the prompt asked for (S5 format locks)
+    budget: int | None = None         # answer budget in tokens (S3)
 
 
 class StageTiming(BaseModel):
@@ -516,5 +579,6 @@ class AnalyzeResponse(BaseModel):
     s5: S5Result
     s6: S6Result
     s7: S7Result
+    recommendation: Recommendation
     timings: list[StageTiming]
     total_ms: float

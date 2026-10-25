@@ -12,10 +12,11 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import documents, resources
+from . import documents, live, market, resources
 from .config import prices, thresholds
 from .pipeline import STAGES, analyze
-from .schemas import AnalyzeRequest, AnalyzeResponse, DocumentInfo, UploadError, UploadResponse
+from .schemas import (AnalyzeRequest, AnalyzeResponse, CompareRequest, DocumentInfo, LiveRequest, MarketRequest,
+                      UploadError, UploadResponse)
 
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 
@@ -75,6 +76,50 @@ def delete_document(doc_id: str):
 @app.post("/api/v1/analyze", response_model=AnalyzeResponse)
 async def analyze_prompt(req: AnalyzeRequest):
     return await analyze(req)
+
+
+def _with_whole_files(prompt: str, document_ids: list[str]) -> str:
+    """The prompt with every attached file in full in front: what asking about them costs without retrieval."""
+    docs, _ = documents.store().get(document_ids) if document_ids else ([], [])
+    whole = "\n\n".join(u.text for d in docs for u in d.units)
+    return f"{whole}\n\n{prompt}" if whole else prompt
+
+
+@app.post("/api/v1/market-tokens")
+async def market_tokens(req: MarketRequest):
+    """Tokens and cost of the original prompt and both variants on every model on sale, each
+    counted by its vendor's own counter (see optimus/market.py)."""
+    texts = {"original": _with_whole_files(req.prompt, req.document_ids)}
+    if req.document_ids:
+        if req.retrieved:
+            texts["retrieved"] = req.retrieved
+    texts |= {"variant_a": req.variant_a, "variant_b": req.variant_b}
+    if req.variant_b_csv:
+        texts["variant_b_csv"] = req.variant_b_csv
+    try:
+        return await asyncio.to_thread(market.count, texts, {k: req.answers.get(k, 0) for k in texts})
+    except OSError as exc:
+        raise HTTPException(502, f"model catalogue unreachable ({exc})") from exc
+
+
+@app.get("/api/v1/live/status")
+async def live_status():
+    return await asyncio.to_thread(live.status)
+
+
+@app.post("/api/v1/live/run")
+async def live_run(req: LiveRequest):
+    """Send one prompt to Gemini or the local Ollama model and return the tokens it really used."""
+    try:
+        return await asyncio.to_thread(live.run, req.provider, _with_whole_files(req.prompt, req.document_ids), req.model)
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/api/v1/live/compare")
+async def live_compare(req: CompareRequest):
+    """How each reply compares with the reference reply and with what the prompt asked for."""
+    return await asyncio.to_thread(live.compare, req.replies, req.reference, req.labels, req.formats, req.budget)
 
 
 if FRONTEND_DIST.exists():
